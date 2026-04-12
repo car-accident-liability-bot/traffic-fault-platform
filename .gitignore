@@ -26,7 +26,6 @@ pnpm-debug.log*
 
 # =========================
 # Environment / secrets
-# 주석: 로컬 환경변수 파일은 커밋하지 않도록 제외
 # =========================
 .env
 .env.*
@@ -35,7 +34,6 @@ pnpm-debug.log*
 
 # =========================
 # Python
-# 주석: ai-core / training-runner / inference-service 용
 # =========================
 __pycache__/
 *.py[cod]
@@ -50,47 +48,35 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
-dist/
-build/
 site/
 .eggs/
 *.egg
 *.egg-info/
 pip-wheel-metadata/
 
-# 가상환경
 .venv/
 venv/
 env/
 ENV/
 
-# Jupyter / notebooks
 .ipynb_checkpoints/
 
 # =========================
-# Java / Gradle / Spring Boot
-# 주석: backend-api-java 용
+# Java / Gradle
 # =========================
 .gradle/
-build/
 out/
 target/
 bin/
 !gradle/wrapper/gradle-wrapper.jar
-
-# Java crash logs
 hs_err_pid*
 replay_pid*
-
-# Spring Boot local files
 *.class
 
 # =========================
-# Node / React / Vite
-# 주석: frontend-react 용
+# Node / React
 # =========================
 node_modules/
-dist/
 coverage/
 .npm/
 .pnpm-store/
@@ -104,8 +90,18 @@ vite.svg
 *.tsbuildinfo
 
 # =========================
+# Build outputs
+# 주석: 각 앱 내부 산출물과 루트 산출물을 모두 제외한다.
+# =========================
+dist/
+build/
+apps/frontend-react/dist/
+apps/frontend-react/build/
+apps/backend-api-java/build/
+apps/backend-api-java/out/
+
+# =========================
 # Project data / artifacts
-# 주석: 대용량 원본 데이터셋과 작업 산출물은 Git 추적 제외
 # =========================
 data/working/**
 !data/working/.gitkeep
@@ -126,16 +122,7 @@ tmp/
 temp/
 
 # =========================
-# Dataset manifests
-# 주석: manifest는 보통 추적하는 게 좋으므로 유지
-# 필요 시 아래 줄을 추가해서 제외 가능
-# data/manifests/*.csv
-# data/manifests/*.json
-# =========================
-
-# =========================
-# Archive files
-# 주석: ZIP 원본이나 중간 압축파일 커밋 방지
+# Archives / large assets
 # =========================
 *.zip
 *.7z
@@ -143,19 +130,11 @@ temp/
 *.tar.gz
 *.tgz
 *.rar
-
-# =========================
-# Media / model artifacts
-# 주석: 대용량 모델/영상/이미지 산출물 커밋 방지
-# 필요 시 샘플 디렉터리만 별도 추적
-# =========================
 *.ckpt
 *.pt
 *.pth
 *.onnx
 *.safetensors
-
-# 대용량 미디어 산출물
 *.mp4
 *.avi
 *.mov
@@ -170,6 +149,5 @@ temp/
 
 # =========================
 # Keep empty directories
-# 주석: 폴더 구조 유지용 .gitkeep은 허용
 # =========================
 !.gitkeep

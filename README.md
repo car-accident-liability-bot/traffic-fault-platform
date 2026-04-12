@@ -1,5 +1,3 @@
-# README.md
-
 # traffic-fault-platform
 
 차대차 사고 영상 기반 멀티모달 챗봇 프로젝트를 위한 모노레포다.
@@ -19,12 +17,57 @@
 traffic-fault-platform/
 ├─ README.md
 ├─ .gitignore
+├─ pyproject.toml
+├─ apps/
+│  ├─ training-runner/
+│  │  ├─ pyproject.toml
+│  │  ├─ README.md
+│  │  ├─ scripts/
+│  │  │  └─ build_pipeline_subset.py
+│  │  └─ src/
+│  │     └─ training_runner/
+│  │        ├─ __init__.py
+│  │        └─ cli/
+│  │           ├─ __init__.py
+│  │           └─ build_pipeline_subset.py
+│  ├─ inference-service/
+│  │  ├─ pyproject.toml
+│  │  ├─ README.md
+│  │  └─ src/
+│  │     └─ traffic_inference_service/
+│  │        ├─ __init__.py
+│  │        ├─ main.py
+│  │        └─ api/
+│  │           ├─ __init__.py
+│  │           └─ routes.py
+│  ├─ backend-api-java/
+│  │  └─ README.md
+│  └─ frontend-react/
+│     └─ README.md
+├─ packages/
+│  ├─ ai-core/
+│  │  ├─ pyproject.toml
+│  │  ├─ README.md
+│  │  └─ src/
+│  │     └─ traffic_ai_core/
+│  │        ├─ __init__.py
+│  │        └─ data/
+│  │           ├─ __init__.py
+│  │           └─ zip_subset.py
+│  └─ contracts/
+│     ├─ README.md
+│     ├─ openapi/
+│     │  └─ .gitkeep
+│     ├─ json-schema/
+│     │  └─ .gitkeep
+│     └─ examples/
+│        └─ .gitkeep
 ├─ configs/
-│  ├─ dataset/
-│  ├─ model/
-│  └─ prompt/
+│  └─ README.md
 ├─ docs/
-│  └─ dataset_notes.md
+│  ├─ dataset_notes.md
+│  ├─ project_proposal.md
+│  └─ python_setup.md
 ├─ data/
 │  ├─ manifests/
 │  │  └─ .gitkeep
@@ -34,35 +77,8 @@ traffic-fault-platform/
 │  └─ .gitkeep
 ├─ checkpoints/
 │  └─ .gitkeep
-├─ outputs/
-│  └─ .gitkeep
-├─ apps/
-│  ├─ training-runner/
-│  │  └─ scripts/
-│  ├─ inference-service/
-│  │  └─ app/
-│  │     └─ routes/
-│  ├─ backend-api-java/
-│  │  └─ src/
-│  │     └─ main/
-│  │        ├─ java/
-│  │        └─ resources/
-│  └─ frontend-react/
-│     └─ src/
-├─ packages/
-│  ├─ ai-core/
-│  │  └─ src/
-│  │     └─ traffic_ai_core/
-│  │        ├─ data/
-│  │        ├─ schemas/
-│  │        ├─ video/
-│  │        ├─ prompts/
-│  │        └─ utils/
-│  └─ contracts/
-│     ├─ json-schema/
-│     ├─ openapi/
-│     └─ examples/
-└─ scripts/
+└─ outputs/
+   └─ .gitkeep
 ```
 
 ---
@@ -79,7 +95,7 @@ traffic-fault-platform/
 - `inference-service`
   - 멀티모달 추론 서버
 - `backend-api-java`
-  - 업로드/저장/추론 요청 중계 API
+  - 업로드, 저장, 추론 요청 중계 API
 - `frontend-react`
   - 영상 업로드, 질문 입력, 결과 출력 UI
 
@@ -89,7 +105,7 @@ traffic-fault-platform/
 - `ai-core`
   - 학습과 추론이 공통으로 사용하는 Python 로직
 - `contracts`
-  - JSON schema, OpenAPI, 예제 요청/응답 등 언어 중립 계약
+  - JSON Schema, OpenAPI, 예제 요청/응답 등 언어 중립 계약
 
 ### `configs/`
 데이터셋, 모델, 프롬프트 관련 설정 파일을 둔다.
@@ -110,6 +126,7 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 이 저장소는 모노레포로 운영한다.
 
 원칙:
+
 - 실행 앱은 `apps/` 아래에 둔다.
 - 공통 코드는 `packages/` 아래에 둔다.
 - Python, Java, React를 같은 저장소 안에서 관리한다.
@@ -123,13 +140,12 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 데이터셋 기준 문서는 `docs/dataset_notes.md`를 따른다.
 
 ### Public URL
+
 - `https://data.taeo-dev.com/dataset/traffic`
 
-### Local Path
-- `/volume1/project/dataset/traffic`
-
 ### Initial Scope
-- 1차에서는 영상 ZIP + JSON 라벨 ZIP만 사용한다.
+
+- 1차에서는 영상 ZIP과 JSON 라벨 ZIP만 사용한다.
 - 이미지 ZIP은 초기 범위에서 제외한다.
 - `1.Training`에서만 subset을 생성한다.
 - `2.Validation`은 최종 홀드아웃으로 유지한다.
@@ -145,6 +161,7 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 - 기준: 카테고리별 10개
 - 결과: 총 80개 샘플
 - 저장: `data/manifests/subset_pipeline.csv`
+- 관리 방식: manifest 기반 관리
 
 실제 working 파일이 필요하면 선택된 샘플만 `data/working/`으로 추출한다.
 
@@ -152,35 +169,45 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 
 ## Path Policy
 
-경로는 다음 두 기준을 구분한다.
+경로는 아래 두 기준을 구분한다.
 
 ### Public Reference
+
 - 문서
 - 설정
 - manifest
 - 공유용 경로
 
 ### Local Processing
+
 - ZIP 처리
 - subset 추출
 - working 파일 생성
 
 즉,
-- 설명은 URL 기준
-- 실행은 로컬 경로 기준
+
+- 설명은 공용 URL 기준으로 한다.
+- 실행은 기본적으로 공용 URL 기준으로 한다.
+- 필요할 때만 로컬 경로 fallback을 사용한다.
+
+추가 원칙:
+
+- `/volume1` 같은 개인 NAS 절대경로는 저장소 기준 문서와 코드에 고정하지 않는다.
+- manifest에는 로컬 절대경로를 저장하지 않는다.
+- 공용 URL, 상대경로, ZIP 이름, member 파일명 중심으로 관리한다.
 
 ---
 
 ## Development Flow
 
-1. 모노레포 기본 구조 생성
-2. `.gitignore` 설정
+1. 모노레포 기본 구조 정리
+2. `.gitignore` 정리
 3. dataset notes 정리
 4. pipeline subset 생성
-5. JSON 구조 확인
+5. manifest 및 summary 구조 검증
 6. 추론 파이프라인 연결
 7. MVP subset 생성
-8. backend / frontend 통합
+8. backend 및 frontend 통합
 
 ---
 
@@ -190,12 +217,17 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 - 전량 압축 해제는 지양한다.
 - subset은 manifest 기반으로 관리한다.
 - working 디렉터리에는 필요한 샘플만 추출한다.
+- raw/label ZIP 매칭은 ZIP 내부 mp4/json basename overlap 기준으로 처리한다.
+- subset 생성은 공용 URL 디렉터리 인덱스와 원격 ZIP 직접 읽기를 기본으로 한다.
+- Python 설치 및 실행 방법은 루트 README가 아니라 `docs/python_setup.md`에서 관리한다.
+- subset 생성 상세 실행 방법은 `apps/training-runner/README.md`에서 관리한다.
+- 깃 브랜치 전략은 추후 의논 후 결정한다.
 
 ---
 
 ## 커밋 메시지 규칙
 
-우리 팀은 커밋 메시지의 일관성과 가독성을 위해 아래 규칙을 사용합니다.
+우리 팀은 커밋 메시지의 일관성과 가독성을 위해 아래 규칙을 사용한다.
 
 ### 기본 형식
 
@@ -203,7 +235,7 @@ manifest와 working subset 등 실험용 데이터를 둔다.
 type(scope): subject
 ```
 
-필요한 경우 본문과 푸터를 아래처럼 추가할 수 있습니다.
+필요한 경우 본문과 푸터를 아래처럼 추가할 수 있다.
 
 ```text
 type(scope): subject
@@ -220,125 +252,118 @@ feat(frontend): NER 추론 결과 출력 영역 추가
 fix(backend): metrics_history.json 파싱 오류 수정
 refactor(core): 엔티티 매핑 로직 분리
 docs(readme): 실행 방법 문서 정리
-test(api): 모델 목록 조회 테스트 추가
-chore(deploy): nginx 설정 정리
+chore(gitignore): 불필요한 산출물 제외 패턴 추가
 ```
 
-### type 목록
+### type 설명
 
 - `feat`: 새로운 기능 추가
 - `fix`: 버그 수정
-- `refactor`: 동작 변화 없는 구조 개선
+- `refactor`: 기능 변화 없는 구조 개선
 - `docs`: 문서 수정
-- `test`: 테스트 추가 및 수정
-- `chore`: 기타 설정, 빌드 외 자잘한 작업
-- `style`: 코드 포맷팅, 공백, 세미콜론 등 비기능 변경
-- `build`: 빌드 관련 변경
-- `ci`: CI/CD 설정 변경
+- `style`: 포맷팅, 세미콜론, 공백 등 비기능 수정
+- `test`: 테스트 코드 추가 또는 수정
+- `chore`: 빌드, 설정, 패키지, 기타 자잘한 작업
 - `perf`: 성능 개선
-- `revert`: 이전 커밋 되돌림
+- `ci`: CI/CD 설정 변경
+- `build`: 빌드 시스템 또는 의존성 변경
 
 ### scope 예시
-
-`s‍cope`는 변경된 영역을 나타내며 선택적으로 작성할 수 있습니다.
 
 - `frontend`
 - `backend`
 - `core`
+- `training`
 - `inference`
 - `dataset`
-- `train`
-- `deploy`
-- `api`
-- `ui`
-
-예시:
-
-```text
-fix(api): metrics history 응답 캐시 누락 수정
-refactor(core): NER 라벨 매핑 로직 단순화
-feat(frontend): subject 예시 툴팁 추가
-chore(deploy): 정적 파일 경로 정리
-```
+- `readme`
+- `gitignore`
 
 ### subject 작성 규칙
 
-- 변경 내용을 한 줄로 명확하게 작성합니다.
-- 모호한 표현은 사용하지 않습니다.
-- 하나의 커밋에는 하나의 목적만 담는 것을 권장합니다.
+- 너무 길지 않게 작성한다.
+- 현재형으로 작성한다.
+- 불필요한 마침표는 쓰지 않는다.
+- 무엇을 바꿨는지 바로 이해되게 작성한다.
 
 좋은 예:
 
-```text
-fix(frontend): 모델 선택 시 차트가 갱신되지 않는 문제 수정
-feat(api): metrics history 조회 엔드포인트 추가
-refactor(core): NER 라벨 매핑 로직 단순화
-```
+- `feat(frontend): 추론 결과 차트 영역 추가`
+- `fix(training): subject 값 누락 오류 수정`
 
-좋지 않은 예:
+애매한 예:
 
-```text
-수정
-버그 수정
-최종 수정
-여러가지 반영
-```
+- `fix: 수정`
+- `feat: 이것저것 변경`
 
-### body 작성 규칙
+### 권장 사항
 
-본문은 선택 사항이며, 아래와 같은 경우 작성합니다.
-
-- 왜 수정했는지 설명이 필요한 경우
-- 변경 범위가 제목만으로 부족한 경우
-- 리뷰어가 맥락을 이해해야 하는 경우
-
-예시:
-
-```text
-feat(frontend): 모델 선택 드롭다운 3단 분리
-
-architecture_type, model_type, context_mode_type 기준으로
-드롭다운을 분리하고 선택값을 조합해 model_name으로 전송하도록 수정했다.
-```
-
-### footer 작성 규칙
-
-이슈 번호, 참조 정보, 브레이킹 체인지를 기록할 때 사용합니다.
-
-예시:
-
-```text
-Refs: #12
-Closes: #12
-BREAKING CHANGE: 기존 model_name 조합 규칙과 호환되지 않음
-```
-
-### 브레이킹 체인지 작성 규칙
-
-기존 동작이나 인터페이스와 호환되지 않는 변경은 제목에 `!`를 추가하고, 본문 또는 푸터에 `BREAKING CHANGE`를 명시합니다.
-
-예시:
-
-```text
-feat(api)!: model_name 조합 규칙 변경
-
-기존 subject_board 방식 제거
-context_mode는 subject, sentence_only만 사용
-
-BREAKING CHANGE: 기존 클라이언트 요청 형식과 호환되지 않음
-```
-
-### 권장 규칙 요약
-
-- 기본 형식은 `type(scope): subject`
-- `type`은 영어로 작성
-- `subject`, `body`는 한국어 작성 가능
-- 필요할 때만 `body`, `footer` 추가
-- 모호한 표현 대신 변경 내용을 구체적으로 작성
-- 한 커밋에는 한 가지 목적만 담기
+- 한 커밋에는 한 가지 목적만 담는다.
+- 기능 추가와 리팩터링은 가능하면 분리한다.
+- README, 설정 파일, 코드 구조 변경은 되도록 커밋 목적이 드러나게 쓴다.
 
 ---
 
-## Additional Notes
+## 참고 문서 및 주요 경로
 
- - 깃 브런치 전략은 의논 후 결정한다.
+프로젝트를 볼 때 아래 문서와 경로를 함께 참고한다.
+
+### 문서
+
+- `docs/dataset_notes.md`
+  - traffic 데이터셋 구조
+  - Training / Validation 사용 정책
+  - 영상 ZIP / JSON ZIP 사용 범위
+  - basename 기준 1:1 매칭 정책
+  - subset 및 manifest 관리 원칙
+
+- `docs/python_setup.md`
+  - Python 가상환경 생성 방법
+  - `py -3.11` 기준 설치 방법
+  - `pip install -e` 실행 순서
+  - training-runner, ai-core, inference-service 설치 및 실행 방법
+
+- `apps/training-runner/README.md`
+  - subset 생성 앱 설명
+  - 실행 진입점 설명
+  - CLI 사용 목적 정리
+
+- `packages/ai-core/README.md`
+  - 공통 Python 코어 모듈 설명
+  - 다른 앱에서 공유하는 역할 정리
+
+- `apps/inference-service/README.md`
+  - 추론 서비스 골격 설명
+  - 향후 FastAPI 기반 확장 방향 정리
+
+- `configs/README.md`
+  - 공용 설정 파일 위치 및 용도 정리
+
+### 주요 데이터 경로
+
+- `data/manifests/`
+  - subset 결과 manifest 저장 위치
+  - 예:
+    - `data/manifests/subset_pipeline.csv`
+    - `data/manifests/subset_pipeline.json`
+    - `data/manifests/subset_pipeline_summary.json`
+
+- `data/working/`
+  - manifest에서 선택된 샘플만 추출하는 working 디렉터리
+  - 전체 원본 압축 해제가 아니라 필요한 샘플만 관리하는 용도
+
+- `artifacts/`
+  - 모델 아티팩트 저장 경로
+
+- `checkpoints/`
+  - 학습 체크포인트 저장 경로
+
+- `outputs/`
+  - 추론 결과, 로그성 산출물 등 최종 출력 저장 경로
+
+### 참고 원칙
+
+- 문서는 공용 URL 기준으로 설명한다.
+- 실행은 기본적으로 공용 URL 기준으로 하고, 필요할 때만 로컬 경로 fallback을 사용한다.
+- manifest에는 로컬 절대경로를 저장하지 않는다.
+- 팀 공용 사용성을 위해 개인 NAS 절대경로 하드코딩은 금지한다.
