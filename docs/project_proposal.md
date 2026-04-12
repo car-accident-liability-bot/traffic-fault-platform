@@ -63,7 +63,6 @@
 본 연구는 다음 데이터셋을 사용한다.
 
 - Public URL: `https://data.taeo-dev.com/dataset/traffic`
-- Local Path: `/volume1/project/dataset/traffic`
 
 ### 디렉터리 구조
 ```text
