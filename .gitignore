@@ -1,0 +1,175 @@
+# =========================
+# OS / common junk
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# IDE / editor
+# =========================
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Environment / secrets
+# 주석: 로컬 환경변수 파일은 커밋하지 않도록 제외
+# =========================
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# =========================
+# Python
+# 주석: ai-core / training-runner / inference-service 용
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+site/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# =========================
+# Java / Gradle / Spring Boot
+# 주석: backend-api-java 용
+# =========================
+.gradle/
+build/
+out/
+target/
+bin/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Java crash logs
+hs_err_pid*
+replay_pid*
+
+# Spring Boot local files
+*.class
+
+# =========================
+# Node / React / Vite
+# 주석: frontend-react 용
+# =========================
+node_modules/
+dist/
+coverage/
+.npm/
+.pnpm-store/
+.yarn/
+.yarn-cache/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+vite.svg
+*.tsbuildinfo
+
+# =========================
+# Project data / artifacts
+# 주석: 대용량 원본 데이터셋과 작업 산출물은 Git 추적 제외
+# =========================
+data/working/**
+!data/working/.gitkeep
+
+artifacts/**
+!artifacts/.gitkeep
+
+checkpoints/**
+!checkpoints/.gitkeep
+
+outputs/**
+!outputs/.gitkeep
+
+runs/**
+!runs/.gitkeep
+
+tmp/
+temp/
+
+# =========================
+# Dataset manifests
+# 주석: manifest는 보통 추적하는 게 좋으므로 유지
+# 필요 시 아래 줄을 추가해서 제외 가능
+# data/manifests/*.csv
+# data/manifests/*.json
+# =========================
+
+# =========================
+# Archive files
+# 주석: ZIP 원본이나 중간 압축파일 커밋 방지
+# =========================
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# =========================
+# Media / model artifacts
+# 주석: 대용량 모델/영상/이미지 산출물 커밋 방지
+# 필요 시 샘플 디렉터리만 별도 추적
+# =========================
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# 대용량 미디어 산출물
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.gif
+
+# =========================
+# Keep empty directories
+# 주석: 폴더 구조 유지용 .gitkeep은 허용
+# =========================
+!.gitkeep
