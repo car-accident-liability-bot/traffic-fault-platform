@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html.parser
 import io
 import json
@@ -8,16 +9,18 @@ import math
 import random
 import re
 import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 DEFAULT_DATASET_BASE_URL = "https://data.taeo-dev.com/dataset/traffic"
 ZIP_SUFFIX = ".zip"
@@ -25,8 +28,16 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 LABEL_EXTENSIONS = {".json"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30
-DEFAULT_HTTP_CHUNK_SIZE = 1024 * 1024
+DEFAULT_HTTP_CHUNK_SIZE = 8 * 1024 * 1024
 HTTP_USER_AGENT = "traffic-fault-platform/0.1 (+subset-builder)"
+DEFAULT_REMOTE_SCAN_WORKERS = 2
+DEFAULT_LABEL_INSPECTION_WORKERS = 2
+DEFAULT_CACHE_DIR = Path("data/cache")
+ZIP_INVENTORY_CACHE_PATH = DEFAULT_CACHE_DIR / "zip_inventory_cache.json"
+LABEL_INSPECTION_CACHE_PATH = DEFAULT_CACHE_DIR / "label_inspection_cache.json"
+CACHE_FORMAT_VERSION = 1
+_REMOTE_FILE_SIZE_CACHE: dict[str, int] = {}
+_REMOTE_RANGE_SUPPORT_CACHE: dict[str, bool] = {}
 
 # 주석:
 # - 실제 공개 데이터셋 JSON 스키마가 문서로 고정돼 있지 않아서,
@@ -112,6 +123,7 @@ class ZipInventory:
     zip_local_path: Path | None
     zip_access_url: str | None
     sample_members: dict[str, str]
+    sample_ids: frozenset[str]
     relevant_member_count: int
     image_member_count: int
     other_member_count: int
@@ -132,6 +144,8 @@ class CategoryZipBundle:
     label_zip_relative_path: str
     raw_zip_public_url: str
     label_zip_public_url: str
+    raw_sample_members: dict[str, str]
+    label_sample_members: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -202,6 +216,173 @@ class LabelQualityOptions:
     require_road_type: bool = True
     require_case_code: bool = True
     rare_case_code_min_frequency: int = 2
+
+
+def _stable_cache_key(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _load_cache_entries(cache_path: Path) -> dict[str, Any]:
+    try:
+        with cache_path.open("r", encoding="utf-8") as cache_file:
+            payload = json.load(cache_file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("version") != CACHE_FORMAT_VERSION:
+        return {}
+
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    return entries
+
+
+def _save_cache_entries(cache_path: Path, entries: dict[str, Any]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    payload = {
+        "version": CACHE_FORMAT_VERSION,
+        "entries": entries,
+    }
+    with temp_path.open("w", encoding="utf-8") as cache_file:
+        json.dump(payload, cache_file, ensure_ascii=False, indent=2, sort_keys=True)
+    temp_path.replace(cache_path)
+
+
+def _get_source_signature(local_path: Path | None, access_url: str | None) -> dict[str, Any]:
+    if local_path is not None:
+        stat_result = local_path.stat()
+        return {
+            "kind": "local",
+            "path": str(local_path.resolve()),
+            "size": stat_result.st_size,
+            "mtime_ns": stat_result.st_mtime_ns,
+        }
+
+    if access_url is not None:
+        return {
+            "kind": "remote",
+            "url": access_url,
+            "size": _fetch_remote_file_size(access_url, timeout_seconds=DEFAULT_HTTP_TIMEOUT_SECONDS),
+        }
+
+    raise ValueError("캐시 키 생성을 위한 source 정보가 없습니다.")
+
+
+def _build_zip_inventory_cache_key(
+    *,
+    zip_name: str,
+    local_path: Path | None,
+    access_url: str | None,
+    allowed_extensions: set[str],
+) -> str:
+    payload = {
+        "type": "zip_inventory",
+        "zip_name": zip_name,
+        "allowed_extensions": sorted(allowed_extensions),
+        "source": _get_source_signature(local_path, access_url),
+    }
+    return _stable_cache_key(payload)
+
+
+def _serialize_zip_inventory_cache_entry(inventory: ZipInventory) -> dict[str, Any]:
+    return {
+        "zip_name": inventory.zip_name,
+        "sample_members": inventory.sample_members,
+        "relevant_member_count": inventory.relevant_member_count,
+        "image_member_count": inventory.image_member_count,
+        "other_member_count": inventory.other_member_count,
+    }
+
+
+def _deserialize_zip_inventory_cache_entry(
+    entry: Any,
+    *,
+    zip_name: str,
+    local_path: Path | None,
+    access_url: str | None,
+) -> ZipInventory | None:
+    if not isinstance(entry, dict):
+        return None
+
+    sample_members = entry.get("sample_members")
+    if not isinstance(sample_members, dict):
+        return None
+
+    normalized_members = {str(key): str(value) for key, value in sample_members.items()}
+    return ZipInventory(
+        zip_name=zip_name,
+        zip_local_path=local_path,
+        zip_access_url=access_url,
+        sample_members=normalized_members,
+        sample_ids=frozenset(normalized_members.keys()),
+        relevant_member_count=int(entry.get("relevant_member_count", len(normalized_members))),
+        image_member_count=int(entry.get("image_member_count", 0)),
+        other_member_count=int(entry.get("other_member_count", 0)),
+    )
+
+
+def _build_label_inspection_cache_key(
+    *,
+    local_path: Path | None,
+    access_url: str | None,
+    zip_name: str,
+    member_name: str,
+) -> str:
+    payload = {
+        "type": "label_inspection",
+        "zip_name": zip_name,
+        "member_name": member_name,
+        "source": _get_source_signature(local_path, access_url),
+    }
+    return _stable_cache_key(payload)
+
+
+def _serialize_label_inspection_cache_entry(inspection: LabelQualityInspection) -> dict[str, Any]:
+    return {
+        "has_valid_fault_ratio": inspection.has_valid_fault_ratio,
+        "road_type": inspection.road_type,
+        "case_code": inspection.case_code,
+        "has_minimum_required_fields": inspection.has_minimum_required_fields,
+    }
+
+
+def _deserialize_label_inspection_cache_entry(entry: Any) -> LabelQualityInspection | None:
+    if not isinstance(entry, dict):
+        return None
+
+    required_keys = {
+        "has_valid_fault_ratio",
+        "road_type",
+        "case_code",
+        "has_minimum_required_fields",
+    }
+    if not required_keys.issubset(entry.keys()):
+        return None
+
+    return LabelQualityInspection(
+        has_valid_fault_ratio=bool(entry["has_valid_fault_ratio"]),
+        road_type=entry["road_type"] if entry["road_type"] is None else str(entry["road_type"]),
+        case_code=entry["case_code"] if entry["case_code"] is None else str(entry["case_code"]),
+        has_minimum_required_fields=bool(entry["has_minimum_required_fields"]),
+    )
+
+
+def _accumulate_label_inspection_counters(
+    inspection: LabelQualityInspection,
+    road_type_counter: Counter[str],
+    case_code_counter: Counter[str],
+) -> None:
+    if inspection.road_type is not None:
+        road_type_counter[inspection.road_type] += 1
+    if inspection.case_code is not None:
+        case_code_counter[inspection.case_code] += 1
 
 
 class _DirectoryIndexParser(html.parser.HTMLParser):
@@ -323,6 +504,7 @@ class RemoteHttpRangeReader(io.RawIOBase):
             timeout_seconds=self._timeout_seconds,
         )
         expected_size = end - start + 1
+
         if len(chunk) < expected_size:
             raise OSError(
                 "HTTP Range 응답 길이가 예상보다 짧습니다. "
@@ -333,7 +515,6 @@ class RemoteHttpRangeReader(io.RawIOBase):
 
         self._chunk_cache[chunk_index] = chunk
         return chunk
-
 
 def _build_public_url(dataset_base_url: str, relative_path: PurePosixPath) -> str:
     encoded_parts = [quote(part) for part in relative_path.parts]
@@ -349,11 +530,107 @@ def _normalize_directory_url(directory_url: str) -> str:
     return stripped
 
 
+def _encode_url_path(url: str) -> str:
+    parsed = urlparse(url)
+    encoded_path = quote(unquote(parsed.path), safe="/")
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            encoded_path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def _build_request(url: str, *, method: str = "GET", headers: dict[str, str] | None = None) -> urllib.request.Request:
     request_headers = {"User-Agent": HTTP_USER_AGENT}
     if headers:
         request_headers.update(headers)
-    return urllib.request.Request(url, headers=request_headers, method=method)
+    return urllib.request.Request(_encode_url_path(url), headers=request_headers, method=method)
+
+
+def _sanitize_cache_filename(name: str) -> str:
+    sanitized = re.sub(r"[^0-9A-Za-z._-가-힣]+", "_", name).strip("._")
+    return sanitized or "remote.zip"
+
+
+def _remote_url_supports_range(url: str, *, timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS) -> bool:
+    cache_key = _encode_url_path(url)
+    cached = _REMOTE_RANGE_SUPPORT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    request = _build_request(url, headers={"Range": "bytes=0-0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status_code = getattr(response, "status", None)
+            content_range = response.headers.get("Content-Range")
+            response.read(1)
+            supported = bool(content_range or status_code == 206)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {400, 405, 416, 501}:
+            supported = False
+        else:
+            supported = False
+    except (urllib.error.URLError, OSError, ValueError):
+        supported = False
+
+    _REMOTE_RANGE_SUPPORT_CACHE[cache_key] = supported
+    return supported
+
+
+def _download_remote_file_to_temporary_path(
+    url: str,
+    *,
+    timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
+) -> Path:
+    """Range 미지원 환경에서만 사용하는 임시 로컬 ZIP 파일을 만든다.
+
+    주석:
+    - 영구 캐시 디렉터리를 사용하지 않는다.
+    - subset 실행 중에만 임시 파일을 만들고, 사용이 끝나면 즉시 삭제한다.
+    - 그래서 대용량 remote_zip_file_cache 디렉터리가 계속 쌓이지 않는다.
+    """
+    expected_size = _fetch_remote_file_size(url, timeout_seconds=timeout_seconds)
+    encoded_url = _encode_url_path(url)
+    parsed = urlparse(encoded_url)
+    original_name = unquote(PurePosixPath(parsed.path).name) or "remote.zip"
+    suffix = Path(original_name).suffix or ".zip"
+
+    with tempfile.NamedTemporaryFile(prefix="traffic_remote_zip_", suffix=suffix, delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+        request = _build_request(url)
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            shutil.copyfileobj(response, temp_file, length=1024 * 1024)
+
+    actual_size = temp_path.stat().st_size
+    if expected_size > 0 and actual_size != expected_size:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OSError(
+            "원격 ZIP 전체 다운로드 길이가 예상과 다릅니다. "
+            f"url={url}, expected={expected_size}, actual={actual_size}"
+        )
+
+    return temp_path
+
+
+def _determine_remote_worker_count(urls: Iterable[str | None], default_workers: int, item_count: int) -> int:
+    max_candidates = max(1, item_count)
+    remote_urls = [url for url in urls if url]
+    if not remote_urls:
+        return min(default_workers, max_candidates)
+
+    sample_url = remote_urls[0]
+    if not _remote_url_supports_range(sample_url, timeout_seconds=DEFAULT_HTTP_TIMEOUT_SECONDS):
+        return 1
+
+    return min(default_workers, max_candidates)
 
 
 def _infer_remote_directory_identity(directory_url: str) -> tuple[str, str]:
@@ -469,7 +746,7 @@ def _list_remote_zip_files(
         if href in {"../", "./", "#"}:
             continue
 
-        absolute_url = urljoin(normalized_base, href)
+        absolute_url = _encode_url_path(urljoin(normalized_base, href))
         parsed = urlparse(absolute_url)
         file_name = unquote(PurePosixPath(parsed.path).name)
         if not file_name or not file_name.lower().endswith(ZIP_SUFFIX):
@@ -480,26 +757,47 @@ def _list_remote_zip_files(
 
 
 def _fetch_remote_file_size(url: str, *, timeout_seconds: int) -> int:
+    cached_size = _REMOTE_FILE_SIZE_CACHE.get(url)
+    if cached_size is not None:
+        return cached_size
+
     try:
         request = _build_request(url, method="HEAD")
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             content_length = response.headers.get("Content-Length")
             if content_length is not None:
-                return int(content_length)
+                file_size = int(content_length)
+                _REMOTE_FILE_SIZE_CACHE[url] = file_size
+                return file_size
     except (urllib.error.URLError, ValueError, OSError):
         pass
 
-    request = _build_request(url, headers={"Range": "bytes=0-0"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        content_range = response.headers.get("Content-Range")
-        if content_range:
-            match = re.match(r"bytes\s+\d+-\d+/(\d+)", content_range)
-            if match:
-                return int(match.group(1))
+    try:
+        request = _build_request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            content_range = response.headers.get("Content-Range")
+            if content_range:
+                match = re.match(r"bytes\s+\d+-\d+/(\d+)", content_range)
+                if match:
+                    file_size = int(match.group(1))
+                    _REMOTE_FILE_SIZE_CACHE[url] = file_size
+                    return file_size
 
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                file_size = int(content_length)
+                _REMOTE_FILE_SIZE_CACHE[url] = file_size
+                return file_size
+    except urllib.error.HTTPError:
+        pass
+
+    request = _build_request(url)
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         content_length = response.headers.get("Content-Length")
         if content_length is not None:
-            return int(content_length)
+            file_size = int(content_length)
+            _REMOTE_FILE_SIZE_CACHE[url] = file_size
+            return file_size
 
     raise OSError(f"원격 파일 크기를 확인할 수 없습니다: {url}")
 
@@ -515,21 +813,29 @@ def _fetch_remote_range_bytes(
         raise ValueError(f"유효하지 않은 Range 요청입니다: start={start}, end={end}")
 
     request = _build_request(url, headers={"Range": f"bytes={start}-{end}"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        body = response.read()
-        status_code = getattr(response, "status", None)
-        content_range = response.headers.get("Content-Range")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status_code = getattr(response, "status", None)
+            content_range = response.headers.get("Content-Range")
+            if content_range or status_code == 206:
+                return response.read()
+            if status_code == 200:
+                raise OSError(
+                    "원격 서버가 HTTP Range 요청을 무시했습니다. "
+                    f"url={url}, range={start}-{end}"
+                )
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in {400, 405, 416, 501}:
+            raise OSError(
+                "원격 서버가 HTTP Range 요청을 처리하지 않습니다. "
+                f"url={url}, status={exc.code}"
+            ) from exc
+        raise
 
-    if content_range:
-        return body
 
-    # 주석:
-    # - 일부 단순 HTTP 서버는 Range 요청을 무시하고 200 + 전체 파일을 내려준다.
-    # - 이 경우에도 오프셋 범위만 잘라서 반환하면 ZIP random access가 계속 동작한다.
-    if status_code == 200 and len(body) >= end + 1:
-        return body[start : end + 1]
-
-    return body
+def _create_zip_file(source: Path | io.BufferedIOBase | RemoteHttpRangeReader) -> zipfile.ZipFile:
+    return zipfile.ZipFile(source, mode="r", metadata_encoding="cp949")
 
 
 @contextmanager
@@ -539,19 +845,56 @@ def _open_zip_file(
     access_url: str | None,
 ) -> Iterable[zipfile.ZipFile]:
     if local_path is not None:
-        with zipfile.ZipFile(local_path) as zip_file:
+        with _create_zip_file(local_path) as zip_file:
             yield zip_file
         return
 
     if access_url is None:
         raise ValueError("ZIP 접근 경로가 없습니다. local_path 또는 access_url 중 하나는 필요합니다.")
 
-    remote_reader = RemoteHttpRangeReader(access_url)
+    if _remote_url_supports_range(access_url, timeout_seconds=DEFAULT_HTTP_TIMEOUT_SECONDS):
+        remote_reader = RemoteHttpRangeReader(access_url)
+        try:
+            with _create_zip_file(remote_reader) as zip_file:
+                yield zip_file
+        finally:
+            remote_reader.close()
+        return
+
+    downloaded_path = _download_remote_file_to_temporary_path(
+        access_url,
+        timeout_seconds=DEFAULT_HTTP_TIMEOUT_SECONDS,
+    )
     try:
-        with zipfile.ZipFile(remote_reader) as zip_file:
+        with _create_zip_file(downloaded_path) as zip_file:
             yield zip_file
     finally:
-        remote_reader.close()
+        try:
+            downloaded_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _member_selection_score(member_name: str) -> tuple[int, int, int, str]:
+    normalized = member_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = path.parts
+
+    is_macosx = any(part == "__MACOSX" for part in parts)
+    is_hidden = any(part.startswith(".") for part in parts)
+    depth = len(parts)
+    return (
+        0 if is_macosx else 1,
+        0 if is_hidden else 1,
+        -depth,
+        normalized,
+    )
+
+
+def _select_preferred_member(existing_member: str, candidate_member: str) -> str:
+    if _member_selection_score(candidate_member) > _member_selection_score(existing_member):
+        return candidate_member
+    return existing_member
 
 
 def _scan_single_zip_inventory(
@@ -570,18 +913,20 @@ def _scan_single_zip_inventory(
             if member_name.endswith("/"):
                 continue
 
-            member_path = Path(member_name)
+            normalized_member_name = member_name.replace("\\", "/")
+            member_path = PurePosixPath(normalized_member_name)
             extension = member_path.suffix.lower()
 
             if extension in allowed_extensions:
                 sample_id = member_path.stem
-                if sample_id in sample_members:
-                    source_display = str(local_path) if local_path is not None else str(access_url)
-                    raise ValueError(
-                        "ZIP 내부 중복 sample_id가 있습니다. "
-                        f"zip={source_display}, sample_id={sample_id}"
+                existing_member = sample_members.get(sample_id)
+                if existing_member is None:
+                    sample_members[sample_id] = normalized_member_name
+                else:
+                    sample_members[sample_id] = _select_preferred_member(
+                        existing_member,
+                        normalized_member_name,
                     )
-                sample_members[sample_id] = member_name
                 continue
 
             if extension in IMAGE_EXTENSIONS:
@@ -594,6 +939,7 @@ def _scan_single_zip_inventory(
         zip_local_path=local_path,
         zip_access_url=access_url,
         sample_members=sample_members,
+        sample_ids=frozenset(sample_members.keys()),
         relevant_member_count=len(sample_members),
         image_member_count=image_member_count,
         other_member_count=other_member_count,
@@ -618,20 +964,58 @@ def _scan_local_zip_inventory(directory: Path, allowed_extensions: set[str]) -> 
 
 
 def _scan_remote_zip_inventory(directory_url: str, allowed_extensions: set[str]) -> list[ZipInventory]:
+    zip_files = _list_remote_zip_files(directory_url)
+    if not zip_files:
+        return []
+
+    cache_entries = _load_cache_entries(ZIP_INVENTORY_CACHE_PATH)
+    cache_updates: dict[str, Any] = {}
     inventories: list[ZipInventory] = []
 
-    for zip_name, zip_url in _list_remote_zip_files(directory_url):
+    def worker(zip_name: str, zip_url: str) -> tuple[ZipInventory | None, str | None, dict[str, Any] | None]:
+        cache_key = _build_zip_inventory_cache_key(
+            zip_name=zip_name,
+            local_path=None,
+            access_url=zip_url,
+            allowed_extensions=allowed_extensions,
+        )
+        cached_inventory = _deserialize_zip_inventory_cache_entry(
+            cache_entries.get(cache_key),
+            zip_name=zip_name,
+            local_path=None,
+            access_url=zip_url,
+        )
+        if cached_inventory is not None:
+            return cached_inventory, None, None
+
         inventory = _scan_single_zip_inventory(
             zip_name=zip_name,
             local_path=None,
             access_url=zip_url,
             allowed_extensions=allowed_extensions,
         )
-        if not inventory.sample_members:
-            continue
-        inventories.append(inventory)
+        return inventory, cache_key, _serialize_zip_inventory_cache_entry(inventory)
 
-    return inventories
+    max_workers = _determine_remote_worker_count([zip_url for _zip_name, zip_url in zip_files], DEFAULT_REMOTE_SCAN_WORKERS, len(zip_files))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(worker, zip_name, zip_url): (zip_name, zip_url)
+            for zip_name, zip_url in zip_files
+        }
+
+        for future in as_completed(future_map):
+            inventory, cache_key, cache_entry = future.result()
+            if inventory is None or not inventory.sample_members:
+                continue
+            inventories.append(inventory)
+            if cache_key is not None and cache_entry is not None:
+                cache_updates[cache_key] = cache_entry
+
+    if cache_updates:
+        cache_entries.update(cache_updates)
+        _save_cache_entries(ZIP_INVENTORY_CACHE_PATH, cache_entries)
+
+    return sorted(inventories, key=lambda item: item.zip_name)
 
 
 def _tokenize_stem(stem: str) -> list[str]:
@@ -766,7 +1150,15 @@ def _maximum_weight_assignment(weights: list[list[int]]) -> list[int]:
     return assignment
 
 
-def _pair_zip_inventories(
+
+def _build_fast_zip_pair_key(zip_name: str) -> str:
+    stem = Path(zip_name).stem
+    if stem.startswith("TS_") or stem.startswith("TL_"):
+        return stem[3:]
+    return stem
+
+
+def _pair_zip_inventories_by_overlap(
     raw_inventories: list[ZipInventory],
     label_inventories: list[ZipInventory],
 ) -> list[tuple[ZipInventory, ZipInventory, int]]:
@@ -781,11 +1173,10 @@ def _pair_zip_inventories(
 
     weights: list[list[int]] = []
     for raw_inventory in raw_inventories:
-        raw_ids = set(raw_inventory.sample_members.keys())
+        raw_ids = raw_inventory.sample_ids
         row: list[int] = []
         for label_inventory in label_inventories:
-            label_ids = set(label_inventory.sample_members.keys())
-            row.append(len(raw_ids & label_ids))
+            row.append(len(raw_ids & label_inventory.sample_ids))
         weights.append(row)
 
     unmatched_raw = [
@@ -835,7 +1226,59 @@ def _pair_zip_inventories(
     return matched_pairs
 
 
+def _pair_zip_inventories(
+    raw_inventories: list[ZipInventory],
+    label_inventories: list[ZipInventory],
+) -> list[tuple[ZipInventory, ZipInventory, int]]:
+    if len(raw_inventories) != len(label_inventories):
+        raise ValueError(
+            "relevant ZIP 개수가 raw/label 사이에 다릅니다. "
+            f"raw={len(raw_inventories)}, label={len(label_inventories)}"
+        )
+
+    if not raw_inventories:
+        return []
+
+    raw_groups: dict[str, list[ZipInventory]] = {}
+    label_groups: dict[str, list[ZipInventory]] = {}
+
+    for inventory in raw_inventories:
+        raw_groups.setdefault(_build_fast_zip_pair_key(inventory.zip_name), []).append(inventory)
+    for inventory in label_inventories:
+        label_groups.setdefault(_build_fast_zip_pair_key(inventory.zip_name), []).append(inventory)
+
+    matched_pairs: list[tuple[ZipInventory, ZipInventory, int]] = []
+    matched_raw_names: set[str] = set()
+    matched_label_names: set[str] = set()
+
+    for pair_key in sorted(set(raw_groups) & set(label_groups)):
+        raw_group = raw_groups[pair_key]
+        label_group = label_groups[pair_key]
+
+        if len(raw_group) != 1 or len(label_group) != 1:
+            continue
+
+        raw_inventory = raw_group[0]
+        label_inventory = label_group[0]
+        overlap_count = len(raw_inventory.sample_ids & label_inventory.sample_ids)
+        if overlap_count <= 0:
+            continue
+
+        matched_pairs.append((raw_inventory, label_inventory, overlap_count))
+        matched_raw_names.add(raw_inventory.zip_name)
+        matched_label_names.add(label_inventory.zip_name)
+
+    remaining_raw = [inventory for inventory in raw_inventories if inventory.zip_name not in matched_raw_names]
+    remaining_label = [inventory for inventory in label_inventories if inventory.zip_name not in matched_label_names]
+
+    if remaining_raw or remaining_label:
+        matched_pairs.extend(_pair_zip_inventories_by_overlap(remaining_raw, remaining_label))
+
+    return matched_pairs
+
+
 def build_category_bundles(
+
     metadata: DatasetMetadata,
     *,
     raw_dir: Path | None = None,
@@ -910,6 +1353,8 @@ def build_category_bundles(
                     if label_inventory.zip_access_url is not None
                     else _build_public_url(metadata.dataset_base_url, label_zip_relative_path)
                 ),
+                raw_sample_members=raw_inventory.sample_members,
+                label_sample_members=label_inventory.sample_members,
             )
         )
 
@@ -920,21 +1365,8 @@ def build_records_for_bundle(
     bundle: CategoryZipBundle,
     split: str,
 ) -> tuple[list[SelectedSample], dict[str, int | str]]:
-    raw_selected = _scan_single_zip_inventory(
-        zip_name=bundle.raw_zip_name,
-        local_path=bundle.raw_zip_local_path,
-        access_url=bundle.raw_zip_access_url,
-        allowed_extensions=VIDEO_EXTENSIONS,
-    )
-    label_selected = _scan_single_zip_inventory(
-        zip_name=bundle.label_zip_name,
-        local_path=bundle.label_zip_local_path,
-        access_url=bundle.label_zip_access_url,
-        allowed_extensions=LABEL_EXTENSIONS,
-    )
-
-    raw_members = raw_selected.sample_members
-    label_members = label_selected.sample_members
+    raw_members = bundle.raw_sample_members
+    label_members = bundle.label_sample_members
 
     raw_ids = set(raw_members.keys())
     label_ids = set(label_members.keys())
@@ -1033,110 +1465,89 @@ def _is_ambiguous_text(text: str | None) -> bool:
     return normalized in {_normalize_key(item) for item in AMBIGUOUS_TEXT_VALUES} or normalized == ""
 
 
-def _collect_key_matched_values(payload: Any, candidate_keys: tuple[str, ...]) -> list[Any]:
-    normalized_candidates = {_normalize_key(candidate) for candidate in candidate_keys}
-    matched_values: list[Any] = []
+
+def _normalize_scalar_iter(node: Any) -> Iterable[str]:
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _normalize_scalar_iter(value)
+        return
+    if isinstance(node, list):
+        for item in node:
+            yield from _normalize_scalar_iter(item)
+        return
+
+    text = _normalize_text_value(node)
+    if text is not None:
+        yield text
+
+
+def _analyze_label_payload(payload: Any) -> LabelQualityInspection:
+    normalized_fault_keys = {_normalize_key(candidate) for candidate in FAULT_RATIO_KEY_CANDIDATES}
+    normalized_road_keys = {_normalize_key(candidate) for candidate in ROAD_TYPE_KEY_CANDIDATES}
+    normalized_case_keys = {_normalize_key(candidate) for candidate in CASE_CODE_KEY_CANDIDATES}
+    normalized_core_keys = {_normalize_key(candidate) for candidate in CORE_LABEL_KEY_CANDIDATES}
+    normalized_ambiguous_values = {_normalize_key(item) for item in AMBIGUOUS_TEXT_VALUES}
+
+    has_valid_fault_ratio = False
+    road_type: str | None = None
+    case_code: str | None = None
+    has_minimum_required_fields = False
 
     def walk(node: Any) -> None:
+        nonlocal has_valid_fault_ratio, road_type, case_code, has_minimum_required_fields
+
         if isinstance(node, dict):
             for key, value in node.items():
-                if _normalize_key(str(key)) in normalized_candidates:
-                    matched_values.append(value)
+                normalized_key = _normalize_key(str(key))
+
+                if normalized_key in normalized_core_keys:
+                    has_minimum_required_fields = True
+
+                if normalized_key in normalized_fault_keys and not has_valid_fault_ratio:
+                    for text in _normalize_scalar_iter(value):
+                        normalized_text = re.sub(r"\s+", "", text).lower()
+                        if normalized_text in normalized_ambiguous_values:
+                            continue
+                        if normalized_text in {"nan", "nannan", "none", "null"}:
+                            continue
+                        if re.search(r"\d", text):
+                            has_valid_fault_ratio = True
+                            break
+
+                if normalized_key in normalized_road_keys and road_type is None:
+                    for text in _normalize_scalar_iter(value):
+                        if _is_ambiguous_text(text):
+                            continue
+                        road_type = text
+                        break
+
+                if normalized_key in normalized_case_keys and case_code is None:
+                    for text in _normalize_scalar_iter(value):
+                        if _is_ambiguous_text(text):
+                            continue
+                        case_code = text
+                        break
+
                 walk(value)
-        elif isinstance(node, list):
+            return
+
+        if isinstance(node, list):
             for item in node:
                 walk(item)
 
-    walk(payload)
-    return matched_values
+    if isinstance(payload, (dict, list)) and payload:
+        walk(payload)
 
-
-def _flatten_scalar_values(node: Any) -> list[Any]:
-    if isinstance(node, dict):
-        result: list[Any] = []
-        for value in node.values():
-            result.extend(_flatten_scalar_values(value))
-        return result
-    if isinstance(node, list):
-        result: list[Any] = []
-        for item in node:
-            result.extend(_flatten_scalar_values(item))
-        return result
-    return [node]
-
-
-def _extract_first_distinct_text(payload: Any, candidate_keys: tuple[str, ...]) -> str | None:
-    values = _collect_key_matched_values(payload, candidate_keys)
-    for value in values:
-        for scalar in _flatten_scalar_values(value):
-            text = _normalize_text_value(scalar)
-            if _is_ambiguous_text(text):
-                continue
-            return text
-    return None
-
-
-def _has_minimum_label_fields(payload: Any) -> bool:
-    if not isinstance(payload, (dict, list)):
-        return False
-
-    if isinstance(payload, dict) and not payload:
-        return False
-
-    if isinstance(payload, list) and not payload:
-        return False
-
-    return bool(_collect_key_matched_values(payload, CORE_LABEL_KEY_CANDIDATES))
-
-
-def _is_valid_fault_ratio_value(value: Any) -> bool:
-    if value is None:
-        return False
-
-    if isinstance(value, bool):
-        return False
-
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and not math.isfinite(value):
-            return False
-        return True
-
-    text = str(value).strip()
-    if not text:
-        return False
-
-    normalized = re.sub(r"\s+", "", text).lower()
-    if normalized in {_normalize_key(item) for item in AMBIGUOUS_TEXT_VALUES}:
-        return False
-
-    if normalized in {"nan", "nannan", "none", "null"}:
-        return False
-
-    if re.search(r"\d", text):
-        return True
-
-    return False
-
-
-def _has_valid_fault_ratio(payload: Any) -> bool:
-    values = _collect_key_matched_values(payload, FAULT_RATIO_KEY_CANDIDATES)
-    if not values:
-        return False
-
-    for value in values:
-        for scalar in _flatten_scalar_values(value):
-            if _is_valid_fault_ratio_value(scalar):
-                return True
-    return False
+    return LabelQualityInspection(
+        has_valid_fault_ratio=has_valid_fault_ratio,
+        road_type=road_type,
+        case_code=case_code,
+        has_minimum_required_fields=has_minimum_required_fields,
+    )
 
 
 def _inspect_label_payload(payload: Any) -> LabelQualityInspection:
-    return LabelQualityInspection(
-        has_valid_fault_ratio=_has_valid_fault_ratio(payload),
-        road_type=_extract_first_distinct_text(payload, ROAD_TYPE_KEY_CANDIDATES),
-        case_code=_extract_first_distinct_text(payload, CASE_CODE_KEY_CANDIDATES),
-        has_minimum_required_fields=_has_minimum_label_fields(payload),
-    )
+    return _analyze_label_payload(payload)
 
 
 def _read_label_payload_from_zip(zip_file: zipfile.ZipFile, member_name: str) -> Any:
@@ -1153,6 +1564,84 @@ def _group_records_by_label_zip(
             key = (record.label_zip_local_path, record.label_zip_access_url, record.label_zip_name)
             grouped.setdefault(key, []).append((category, record))
     return grouped
+
+
+def _inspect_label_group_with_cache(
+    *,
+    local_path: Path | None,
+    access_url: str | None,
+    zip_name: str,
+    group_items: list[tuple[str, SelectedSample]],
+    cache_entries: dict[str, Any],
+) -> tuple[
+    dict[tuple[str, str], LabelQualityInspection | None],
+    dict[tuple[str, str], str],
+    Counter[str],
+    Counter[str],
+    int,
+    dict[str, Any],
+]:
+    inspections: dict[tuple[str, str], LabelQualityInspection | None] = {}
+    failure_reasons: dict[tuple[str, str], str] = {}
+    road_type_counter: Counter[str] = Counter()
+    case_code_counter: Counter[str] = Counter()
+    cache_updates: dict[str, Any] = {}
+    total_before_filter = len(group_items)
+
+    pending_items: list[tuple[str, SelectedSample, str]] = []
+
+    for category, record in group_items:
+        sample_key = (category, record.sample_id)
+        cache_key = _build_label_inspection_cache_key(
+            local_path=local_path,
+            access_url=access_url,
+            zip_name=zip_name,
+            member_name=record.label_member_name,
+        )
+        cached_inspection = _deserialize_label_inspection_cache_entry(cache_entries.get(cache_key))
+        if cached_inspection is not None:
+            inspections[sample_key] = cached_inspection
+            _accumulate_label_inspection_counters(cached_inspection, road_type_counter, case_code_counter)
+            continue
+        pending_items.append((category, record, cache_key))
+
+    if not pending_items:
+        return (
+            inspections,
+            failure_reasons,
+            road_type_counter,
+            case_code_counter,
+            total_before_filter,
+            cache_updates,
+        )
+
+    try:
+        with _open_zip_file(local_path=local_path, access_url=access_url) as zip_file:
+            for category, record, cache_key in pending_items:
+                sample_key = (category, record.sample_id)
+                try:
+                    payload = _read_label_payload_from_zip(zip_file, record.label_member_name)
+                    inspection = _inspect_label_payload(payload)
+                    inspections[sample_key] = inspection
+                    _accumulate_label_inspection_counters(inspection, road_type_counter, case_code_counter)
+                    cache_updates[cache_key] = _serialize_label_inspection_cache_entry(inspection)
+                except (OSError, ValueError, json.JSONDecodeError, zipfile.BadZipFile, KeyError) as exc:
+                    inspections[sample_key] = None
+                    failure_reasons[sample_key] = f"label_json_read_error:{type(exc).__name__}"
+    except (OSError, ValueError, zipfile.BadZipFile, KeyError) as exc:
+        for category, record, _cache_key in pending_items:
+            sample_key = (category, record.sample_id)
+            inspections[sample_key] = None
+            failure_reasons[sample_key] = f"label_zip_open_error:{type(exc).__name__}"
+
+    return (
+        inspections,
+        failure_reasons,
+        road_type_counter,
+        case_code_counter,
+        total_before_filter,
+        cache_updates,
+    )
 
 
 def preprocess_category_records(
@@ -1175,33 +1664,48 @@ def preprocess_category_records(
     failure_reasons: dict[tuple[str, str], str] = {}
     road_type_counter: Counter[str] = Counter()
     case_code_counter: Counter[str] = Counter()
-
     total_before_filter = 0
-    grouped_records = _group_records_by_label_zip(category_records)
 
-    for (local_path, access_url, _zip_name), group_items in grouped_records.items():
-        try:
-            with _open_zip_file(local_path=local_path, access_url=access_url) as zip_file:
-                for category, record in group_items:
-                    total_before_filter += 1
-                    key = (category, record.sample_id)
-                    try:
-                        payload = _read_label_payload_from_zip(zip_file, record.label_member_name)
-                        inspection = _inspect_label_payload(payload)
-                        inspections[key] = inspection
-                        if inspection.road_type is not None:
-                            road_type_counter[inspection.road_type] += 1
-                        if inspection.case_code is not None:
-                            case_code_counter[inspection.case_code] += 1
-                    except (OSError, ValueError, json.JSONDecodeError, zipfile.BadZipFile, KeyError) as exc:
-                        inspections[key] = None
-                        failure_reasons[key] = f"label_json_read_error:{type(exc).__name__}"
-        except (OSError, ValueError, zipfile.BadZipFile, KeyError) as exc:
-            for category, record in group_items:
-                total_before_filter += 1
-                key = (category, record.sample_id)
-                inspections[key] = None
-                failure_reasons[key] = f"label_zip_open_error:{type(exc).__name__}"
+    grouped_records = _group_records_by_label_zip(category_records)
+    cache_entries = _load_cache_entries(LABEL_INSPECTION_CACHE_PATH)
+    cache_updates: dict[str, Any] = {}
+
+    group_entries = list(grouped_records.items())
+    max_workers = _determine_remote_worker_count([access_url for (local_path, access_url, _zip_name), _group_items in group_entries], DEFAULT_LABEL_INSPECTION_WORKERS, len(group_entries))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                _inspect_label_group_with_cache,
+                local_path=local_path,
+                access_url=access_url,
+                zip_name=zip_name,
+                group_items=group_items,
+                cache_entries=cache_entries,
+            ): (local_path, access_url, zip_name)
+            for (local_path, access_url, zip_name), group_items in group_entries
+        }
+
+        for future in as_completed(future_map):
+            (
+                group_inspections,
+                group_failure_reasons,
+                group_road_type_counter,
+                group_case_code_counter,
+                group_total_before_filter,
+                group_cache_updates,
+            ) = future.result()
+
+            total_before_filter += group_total_before_filter
+            inspections.update(group_inspections)
+            failure_reasons.update(group_failure_reasons)
+            road_type_counter.update(group_road_type_counter)
+            case_code_counter.update(group_case_code_counter)
+            cache_updates.update(group_cache_updates)
+
+    if cache_updates:
+        cache_entries.update(cache_updates)
+        _save_cache_entries(LABEL_INSPECTION_CACHE_PATH, cache_entries)
 
     filtered_category_records: dict[str, list[SelectedSample]] = {}
     excluded_by_reason: Counter[str] = Counter()
@@ -1216,7 +1720,7 @@ def preprocess_category_records(
                 excluded_by_reason[failure_reasons[key]] += 1
                 continue
 
-            inspection = inspections[key]
+            inspection = inspections.get(key)
             if inspection is None:
                 excluded_by_reason["label_json_read_error"] += 1
                 continue
