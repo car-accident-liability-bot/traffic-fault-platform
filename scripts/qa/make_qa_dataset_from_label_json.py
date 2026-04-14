@@ -2,16 +2,12 @@ import os
 import json
 import pandas as pd
 
-# =========================================================
 # 1. 경로 설정
-# =========================================================
 JSON_ROOT_DIR = "./data/working/pipeline_subset/label"
 CODEBOOK_PATH = "./data/qa/traffic_accident_tables.xlsx"
 OUTPUT_PATH = "./data/qa/qa_dataset.json"
 
-# =========================================================
 # 2. 코드북 로딩
-# =========================================================
 def load_codebook():
     xl = pd.ExcelFile(CODEBOOK_PATH)
 
@@ -35,9 +31,7 @@ def load_codebook():
 
 place_map, feature_map, a_map, b_map = load_codebook()
 
-# =========================================================
 # 3. 질문 템플릿
-# =========================================================
 QUESTION_TEMPLATES = {
     "accident_place": "이 사고는 어떤 장소에서 발생했는가?",
     "accident_place_feature": "이 사고 장소의 특징은 무엇인가?",
@@ -47,9 +41,7 @@ QUESTION_TEMPLATES = {
     "fault_compare": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?"
 }
 
-# =========================================================
 # 4. 유틸 함수
-# =========================================================
 def find_value(data, keys):
     if isinstance(data, dict):
         for k, v in data.items():
@@ -71,9 +63,7 @@ def map_value(value, mapping):
     except:
         return str(value)
 
-# =========================================================
 # 5. QA 생성
-# =========================================================
 def make_qa_from_json(json_path):
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -89,7 +79,7 @@ def make_qa_from_json(json_path):
     fault_a = find_value(data, ["accident_negligence_rateA"])
     fault_b = find_value(data, ["accident_negligence_rateB"])
 
-    # 🔥 코드북 변환
+    # 코드북 변환
     accident_place = map_value(raw_place, place_map)
     accident_feature = map_value(raw_feature, feature_map)
     vehicle_a = map_value(raw_a, a_map)
@@ -158,9 +148,7 @@ def make_qa_from_json(json_path):
         "qa_pairs": qa_pairs
     }
 
-# =========================================================
 # 6. 전체 실행
-# =========================================================
 def main():
     qa_dataset = []
 
