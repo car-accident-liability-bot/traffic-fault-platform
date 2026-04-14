@@ -1,0 +1,27 @@
+{
+    "info": {
+        "name": "accident",
+        "description": "",
+        "url": ""
+    },
+    "video": {
+        "video_name": "bb_3_200501_vehicle_202_20807",
+        "video_date": "200501",
+        "filming_way": "bb",
+        "video_point_of_view": 3,
+        "accident_negligence_rateA": 20,
+        "accident_negligence_rateB": 80,
+        "traffic_accident_type": 187,
+        "accident_object": 0,
+        "accident_place": 13,
+        "accident_place_feature": 37,
+        "vehicle_a_progress_info": 88,
+        "vehicle_b_progress_info": 87,
+        "damage_location": "",
+        "related_laws": "",
+        "violation_of_law": "",
+        "additional_elements": "",
+        "violation_factor": "",
+        "weather": ""
+    }
+}

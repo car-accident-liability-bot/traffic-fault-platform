@@ -1,0 +1,27 @@
+{
+	"info": {
+		"name": "accident",
+		"description": "",
+		"url": ""
+	},
+	"video": {
+		"video_name": "bb_1_160508_vehicle_250_21559",
+		"video_date": "150819",
+		"filming_way": "bb",
+		"video_point_of_view": 1,
+		"accident_negligence_rateA": 80,
+		"accident_negligence_rateB": 20,
+		"traffic_accident_type": 79,
+		"accident_object": 0,
+		"accident_place": 2,
+		"accident_place_feature": 59,
+		"vehicle_a_progress_info": 174,
+		"vehicle_b_progress_info": 170,
+		"damage_location": "",
+		"related_laws": "",
+		"violation_of_law": "",
+		"additional_elements": "",
+		"violation_factor": "",
+		"weather": ""
+	}
+}

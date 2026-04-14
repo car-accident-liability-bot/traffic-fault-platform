@@ -131,3 +131,87 @@ subset 후보를 만들 때 아래 라벨 품질 기준을 기본 적용한다.
    - 예: `https://data.taeo-dev.com/dataset/traffic/1.Training/raw_data_231108_add/`
 
 로컬 절대경로(`/volume1/...`)는 저장소 기준 문서에 고정하지 않는다.
+
+
+팀원 공유용으로 정리하면 아래처럼 보면 됩니다.
+
+**실행 명령어**
+
+```bash
+# URL 모드
+python -m training_runner.cli.build_pipeline_subset \
+  --raw-url "RAW_ZIP_디렉터리_URL" \
+  --label-url "LABEL_ZIP_디렉터리_URL"
+
+# 로컬 경로 모드
+python -m training_runner.cli.build_pipeline_subset \
+  --raw-dir "RAW_ZIP_디렉터리_경로" \
+  --label-dir "LABEL_ZIP_디렉터리_경로"
+```
+
+**옵션별 정리**
+
+* `--raw-dir` : **필수(로컬 모드일 때)** / raw 영상 ZIP 로컬 디렉터리 경로를 지정합니다.
+
+* `--raw-url` : **필수(URL 모드일 때)** / raw 영상 ZIP 공용 URL 디렉터리를 지정합니다.
+
+* `--label-dir` : **필수(로컬 모드일 때)** / label JSON ZIP 로컬 디렉터리 경로를 지정합니다.
+
+* `--label-url` : **필수(URL 모드일 때)** / label JSON ZIP 공용 URL 디렉터리를 지정합니다.
+
+* `--dataset-base-url` : **선택** / 기본값은 `https://data.taeo-dev.com/dataset/traffic` / manifest와 summary에 기록할 기준 데이터셋 URL입니다.
+
+* `--split-name` : **선택** / 기본값은 `자동 추론` / 결과 메타데이터에 들어갈 split 이름입니다.
+
+* `--raw-dir-name` : **선택** / 기본값은 `자동 추론` / 결과 메타데이터에 들어갈 raw 디렉터리 이름입니다.
+
+* `--label-dir-name` : **선택** / 기본값은 `자동 추론` / 결과 메타데이터에 들어갈 label 디렉터리 이름입니다.
+
+* `--per-category` : **선택** / 기본값은 `10` / 카테고리별 샘플 수를 지정합니다.
+
+* `--seed` : **선택** / 기본값은 `42` / 재현 가능한 샘플링용 랜덤 시드입니다.
+
+* `--manifest-csv-out` : **선택** / 기본값은 `data/manifests/subset_pipeline.csv` / subset 결과 CSV manifest 저장 경로입니다.
+
+* `--manifest-json-out` : **선택** / 기본값은 `data/manifests/subset_pipeline.json` / subset 결과 JSON manifest 저장 경로입니다.
+
+* `--summary-out` : **선택** / 기본값은 `data/manifests/subset_pipeline_summary.json` / subset summary JSON 저장 경로입니다.
+
+* `--extract-dir` : **선택** / 기본값은 `data/working/pipeline_subset` / 선택된 샘플을 실제로 추출할 working 디렉터리입니다.
+
+* `--skip-extract` : **선택** / 기본값은 `미사용(False)` / 실제 파일 추출 없이 manifest와 summary만 생성합니다.
+
+* `--disable-label-quality-filter` : **선택** / 기본값은 `미사용(False)` / 라벨 품질 전처리를 끄고 basename 매칭 결과를 그대로 사용합니다.
+
+* `--rare-case-code-min-frequency` : **선택** / 기본값은 `2` / 희귀 case code를 제외할 최소 빈도 기준입니다.
+
+* `--allow-missing-case-code` : **선택** / 기본값은 `미사용(False)` / case code가 없거나 비정상인 샘플도 제외하지 않고 유지합니다.
+
+**주의사항**
+
+* 로컬 모드면 `--raw-dir`, `--label-dir` 둘 다 넣어야 합니다.
+* URL 모드면 `--raw-url`, `--label-url` 둘 다 넣어야 합니다.
+* `raw`는 URL인데 `label`은 dir처럼 섞어서 쓰면 안 됩니다.
+* `--split-name`, `--raw-dir-name`, `--label-dir-name`을 안 주면 입력 경로 또는 URL 기준으로 자동 추론됩니다.
+* `--skip-extract`를 안 쓰면 manifest 생성 후 실제 파일 추출까지 수행됩니다.
+* 기본 전처리에서는 `fault_ratio`, `road_type`, `case_code`가 필요한 샘플만 유지됩니다.
+
+````
+
+**자주 쓰는 전체 예시(URL 모드)**
+```bash
+python -m training_runner.cli.build_pipeline_subset \
+  --raw-url "https://data.taeo-dev.com/dataset/traffic/1.Training/raw_data_231108_add/" \
+  --label-url "https://data.taeo-dev.com/dataset/traffic/1.Training/label_data_231108_add/" \
+  --dataset-base-url "https://data.taeo-dev.com/dataset/traffic" \
+  --split-name "1.Training" \
+  --raw-dir-name "raw_data_231108_add" \
+  --label-dir-name "label_data_231108_add" \
+  --per-category 10 \
+  --seed 42 \
+  --manifest-csv-out "data/manifests/subset_pipeline.csv" \
+  --manifest-json-out "data/manifests/subset_pipeline.json" \
+  --summary-out "data/manifests/subset_pipeline_summary.json" \
+  --extract-dir "data/working/pipeline_subset"
+````
+

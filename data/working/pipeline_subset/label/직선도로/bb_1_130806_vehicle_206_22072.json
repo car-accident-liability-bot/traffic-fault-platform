@@ -1,0 +1,27 @@
+{
+    "info": {
+        "name": "accident",
+        "description": "",
+        "url": ""
+    },
+    "video": {
+        "video_name": "bb_1_130806_vehicle_206_22072",
+        "video_date": "130806",
+        "filming_way": "bb",
+        "video_point_of_view": 1,
+        "accident_negligence_rateA": 100,
+        "accident_negligence_rateB": 0,
+        "traffic_accident_type": 1,
+        "accident_object": 0,
+        "accident_place": 0,
+        "accident_place_feature": 0,
+        "vehicle_a_progress_info": 1,
+        "vehicle_b_progress_info": 1,
+        "damage_location": "",
+        "related_laws": "",
+        "violation_of_law": "",
+        "additional_elements": "",
+        "violation_factor": "",
+        "weather": ""
+    }
+}
