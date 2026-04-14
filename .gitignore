@@ -151,3 +151,40 @@ temp/
 # Keep empty directories
 # =========================
 !.gitkeep
+
+# =========================
+# Shared outputs for subset / cache / EDA
+# 주석:
+# - 팀 공유용 결과물만 추적한다.
+# - raw 영상은 계속 제외한다.
+# - 아래 블록은 반드시 파일 맨 아래에 둔다.
+# =========================
+
+# cache: 두 개만 추적
+data/cache/*
+!data/cache/.gitkeep
+!data/cache/zip_inventory_cache.json
+!data/cache/label_inspection_cache.json
+
+# manifests: subset 설명/재현용 산출물 추적
+data/manifests/*
+!data/manifests/.gitkeep
+!data/manifests/**/*.csv
+!data/manifests/**/*.json
+!data/manifests/**/*.md
+
+# EDA: 팀 공유용 markdown 1개만 추적
+data/eda/*
+!data/eda/.gitkeep
+!data/eda/team_eda_report.md
+
+# extracted subset:
+# 기본적으로 data/working 은 무시하지만,
+# label subset json 만 추적하고 raw 영상은 계속 제외한다.
+!data/working/pipeline_subset/
+!data/working/pipeline_subset/label/
+!data/working/pipeline_subset/label/**
+!data/working/pipeline_subset/label/**/*.json
+
+# raw 영상은 계속 ignore
+data/working/pipeline_subset/raw/**

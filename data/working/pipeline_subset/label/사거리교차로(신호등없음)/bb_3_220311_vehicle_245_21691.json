@@ -1,0 +1,27 @@
+{
+	"info": {
+		"name": "accident",
+		"description": "",
+		"url": ""
+	},
+	"video": {
+		"video_name": "bb_3_220311_vehicle_245_21691",
+		"video_date": "190220",
+		"filming_way": "bb",
+		"video_point_of_view": 3,
+		"accident_negligence_rateA": 70,
+		"accident_negligence_rateB": 30,
+		"accident_object": 0,
+		"accident_place": 1,
+		"accident_place_feature": 10,
+		"vehicle_a_progress_info": 17,
+		"vehicle_b_progress_info": 19,
+		"damage_location": "",
+		"related_laws": "",
+		"violation_of_law": "",
+		"additional_elements": "",
+		"violation_factor": "",
+		"weather": "",
+		"traffic_accident_type": 22
+	}
+}

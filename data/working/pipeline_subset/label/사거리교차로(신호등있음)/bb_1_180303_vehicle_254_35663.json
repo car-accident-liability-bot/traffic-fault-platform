@@ -1,0 +1,27 @@
+{
+    "info": {
+        "name": "accident",
+        "description": "",
+        "url": ""
+    },
+    "video": {
+        "video_name": "bb_1_180303_vehicle_254_35663",
+        "video_date": "180303",
+        "filming_way": "bb",
+        "video_point_of_view": 1,
+        "accident_negligence_rateA": 100,
+        "accident_negligence_rateB": 0,
+        "accident_object": 0,
+        "accident_place": 2,
+        "accident_place_feature": 18,
+        "vehicle_a_progress_info": 51,
+        "vehicle_b_progress_info": 55,
+        "damage_location": "",
+        "related_laws": "",
+        "violation_of_law": "",
+        "additional_elements": "",
+        "violation_factor": "",
+        "weather": "",
+        "traffic_accident_type": 66
+    }
+}
