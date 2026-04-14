@@ -188,3 +188,5 @@ data/eda/*
 
 # raw 영상은 계속 ignore
 data/working/pipeline_subset/raw/**
+
+*.xlsx
