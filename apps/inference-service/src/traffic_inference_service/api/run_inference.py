@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import argparse
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -15,13 +15,8 @@ from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
 # 설정
 # =========================================================
 
-# train 코드에서 final_adapter를 저장한 폴더
-ADAPTER_PATH = "/content/drive/MyDrive/final_adapter"
-
-# 학습에 사용한 베이스 모델과 동일해야 함
-# train 코드에서 config.model_id로 load_model(config.model_id)를 호출했으므로
-# 실제 학습 때 사용한 model_id와 맞춰야 함
-BASE_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "Qwen/Qwen3-VL-4B-Instruct")
+ADAPTER_PATH = os.getenv("ADAPTER_PATH", "./artifacts/final_adapter")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -34,19 +29,16 @@ QUESTION_MAP = {
     "fault_compare": "과실비율 기준으로 더 큰 과실을 가진 차량은 누구인가?",
 }
 
+# FastAPI에서 재사용할 전역 캐시
+_MODEL = None
+_PROCESSOR = None
+
 
 # =========================================================
 # 유틸
 # =========================================================
 
 def normalize_answer(text: str) -> str:
-    """
-    모델 출력 후처리:
-    - 공백 정리
-    - 접두어 제거
-    - 너무 길면 첫 문장만 사용
-    - 가능하면 '~입니다.'로 통일
-    """
     if not text:
         return "응답을 생성하지 못했습니다."
 
@@ -67,16 +59,13 @@ def normalize_answer(text: str) -> str:
 
     text = re.sub(r"\s+", " ", text).strip()
 
-    # 여러 문장 길게 나오는 경우 첫 문장만
     split_candidates = re.split(r"(?<=[.!?])\s+", text)
     if split_candidates and len(split_candidates[0]) > 0:
         text = split_candidates[0].strip()
 
-    # fault_ratio 형태는 그대로 유지
     if re.fullmatch(r"\d+\s*:\s*\d+", text):
         return text.replace(" ", "")
 
-    # 이미 종결 표현 있으면 정리만
     text = re.sub(r"이다\.?$", "입니다.", text)
     text = re.sub(r"입니다$", "입니다.", text)
 
@@ -135,9 +124,6 @@ def _extract_generated_text(
     generated_ids: torch.Tensor,
     input_ids: torch.Tensor,
 ) -> str:
-    """
-    generate 결과에서 prompt 이후의 새 토큰만 잘라 디코딩
-    """
     prompt_len = input_ids.shape[1]
     new_tokens = generated_ids[:, prompt_len:]
     decoded = processor.batch_decode(
@@ -153,10 +139,6 @@ def _extract_generated_text(
 # =========================================================
 
 def process_vision_inputs(messages: list[dict]) -> tuple[Optional[list], Optional[list]]:
-    """
-    qwen-vl-utils가 있으면 그걸 사용하고,
-    없으면 processor가 메시지 내부 경로를 직접 처리하도록 None 반환.
-    """
     try:
         from qwen_vl_utils import process_vision_info  # type: ignore
 
@@ -183,18 +165,17 @@ def load_inference_objects(
 
     print(f"[INFO] 어댑터 로드 중: {adapter_path}")
     model = PeftModel.from_pretrained(
-    base_model,
-    adapter_path,
-    local_files_only=True 
-)
+        base_model,
+        adapter_path,
+        local_files_only=True,
+    )
 
-    # final_adapter 안에 processor도 저장돼 있으므로 여기서 로드
     print("[INFO] processor 로드 중...")
     processor = AutoProcessor.from_pretrained(
-    base_model_id,
-    trust_remote_code=True,
-    local_files_only=True,
-)
+        base_model_id,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
 
     model.eval()
 
@@ -203,6 +184,18 @@ def load_inference_objects(
 
     print("[INFO] 모델 준비 완료")
     return model, processor
+
+
+def get_inference_objects():
+    global _MODEL, _PROCESSOR
+
+    if _MODEL is None or _PROCESSOR is None:
+        _MODEL, _PROCESSOR = load_inference_objects(
+            base_model_id=BASE_MODEL_ID,
+            adapter_path=ADAPTER_PATH,
+        )
+
+    return _MODEL, _PROCESSOR
 
 
 # =========================================================
@@ -232,7 +225,6 @@ def predict_one(
     image_inputs, video_inputs = process_vision_inputs(messages)
 
     if image_inputs is None and video_inputs is None:
-        # qwen_vl_utils가 없을 때 fallback
         inputs = processor(
             text=[prompt_text],
             return_tensors="pt",
@@ -247,7 +239,6 @@ def predict_one(
             padding=True,
         )
 
-    # model.device 기준으로 이동
     target_device = model.device if hasattr(model, "device") else DEVICE
     inputs = {k: v.to(target_device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
@@ -268,108 +259,16 @@ def predict_one(
     return normalize_answer(decoded)
 
 
-# =========================================================
-# CLI / interactive
-# =========================================================
-
-def interactive_mode(model, processor) -> None:
-    print("\n[INFO] interactive mode 시작")
-    print("[INFO] 사용 가능한 question_type:")
-    for key in QUESTION_MAP:
-        print(f" - {key}")
-
-    video_path = input("\n비디오 경로를 입력하세요: ").strip()
-
-    while True:
-        q = input("\nquestion_type 입력 (종료: exit): ").strip()
-
-        if q.lower() in ["exit", "quit", "q"]:
-            print("종료합니다.")
-            break
-
-        try:
-            answer = predict_one(
-                model=model,
-                processor=processor,
-                video_path=video_path,
-                question_type=q,
-            )
-            print(f"[RESULT] {answer}")
-        except Exception as e:
-            print(f"[ERROR] {e}")
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Qwen3-VL final_adapter 인퍼런스")
-    parser.add_argument(
-        "--video-path",
-        type=str,
-        default=None,
-        help="추론할 비디오 파일 경로 (.mp4 등)",
-    )
-    parser.add_argument(
-        "--question-type",
-        type=str,
-        default=None,
-        choices=list(QUESTION_MAP.keys()),
-        help="질문 타입",
-    )
-    parser.add_argument(
-        "--adapter-path",
-        type=str,
-        default=ADAPTER_PATH,
-        help="final_adapter 폴더 경로",
-    )
-    parser.add_argument(
-        "--base-model-id",
-        type=str,
-        default=BASE_MODEL_ID,
-        help="학습에 사용한 베이스 모델 ID",
-    )
-    parser.add_argument(
-        "--max-new-tokens",
-        type=int,
-        default=32,
-        help="생성 토큰 수",
-    )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="대화형 모드 실행",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    print(f"[INFO] DEVICE: {DEVICE}")
-    print(f"[INFO] BASE_MODEL_ID: {args.base_model_id}")
-    print(f"[INFO] ADAPTER_PATH: {args.adapter_path}")
-
-    model, processor = load_inference_objects(
-        base_model_id=args.base_model_id,
-        adapter_path=args.adapter_path,
-    )
-
-    if args.interactive:
-        interactive_mode(model, processor)
-        return
-
-    if not args.video_path or not args.question_type:
-        raise ValueError(
-            "--video-path 와 --question-type 을 함께 주거나, --interactive 를 사용하세요."
-        )
-
-    answer = predict_one(
+def predict_from_video(
+    video_path: str,
+    question_type: str,
+    max_new_tokens: int = 32,
+) -> str:
+    model, processor = get_inference_objects()
+    return predict_one(
         model=model,
         processor=processor,
-        video_path=args.video_path,
-        question_type=args.question_type,
-        max_new_tokens=args.max_new_tokens,
+        video_path=video_path,
+        question_type=question_type,
+        max_new_tokens=max_new_tokens,
     )
-    print(f"[RESULT] {answer}")
-
-
-if __name__ == "__main__":
-    main()
