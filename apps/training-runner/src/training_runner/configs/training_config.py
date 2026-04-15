@@ -57,13 +57,13 @@ class TrainingConfig:
 
     # 로깅
     logging_steps: int = 10
-    eval_steps: int = 50
-    save_steps: int = 50
-    save_total_limit: int = 3            # 최근 3개 체크포인트만 저장 (이전 체크포인트는 자동 삭제)
+    eval_steps: int = 100
+    save_steps: int = 100
+    save_total_limit: int = 2            # 최근 2개 체크포인트만 저장 (이전 체크포인트는 자동 삭제)
     load_best_model_at_end: bool = True
     report_to: str = "none"              # "none" / "wandb" / "tensorboard"
     run_name: str = "qwen3_vl_4b_traffic_lora"
-    dataloader_num_workers: int = 0
+    dataloader_num_workers: int = 4
 
     # 시스템 프롬프트 (experiment_config에서 오버라이드)
     system_prompt: str = (
