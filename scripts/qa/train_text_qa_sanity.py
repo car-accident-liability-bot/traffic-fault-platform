@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 from transformers import (
     AutoProcessor,
     Qwen3VLForConditionalGeneration,
-    Trainer,
+    Trainer,cd /d D:\traffic-fault-platform
     TrainingArguments,
 )
 

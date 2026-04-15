@@ -1,0 +1,15 @@
+{
+  "system_prompt": "당신은 교통사고 영상 분석 AI입니다. 주어진 질문에 대해 한국어로 간결하게 답하십시오. 불필요한 설명 없이 답만 출력하십시오.",
+  "question_templates": {
+    "accident_place": "이 사고는 어떤 장소에서 발생했는가?",
+    "accident_place_feature": "이 사고 장소의 특징은 무엇인가?",
+    "vehicle_a_progress": "차량 A의 주행 상태는 무엇이었는가?",
+    "vehicle_b_progress": "차량 B의 주행 상태는 무엇이었는가?",
+    "fault_ratio": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "fault_compare": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?"
+  },
+  "output_constraints": {
+    "fault_compare": ["차량 A", "차량 B", "동일"],
+    "fault_ratio_format": "숫자:숫자"
+  }
+}
