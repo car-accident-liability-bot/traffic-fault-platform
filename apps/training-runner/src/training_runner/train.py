@@ -18,6 +18,9 @@ def run_training(config: TrainingConfig | None = None) -> None:
 
     _print_config(config)
 
+    print("\n[0/7] 데이터 파일 검증 중...")
+    _validate_data_files(config)
+
     print("\n[1/7] 모델 로드 중...")
     # 원본 Qwen 모델과 프로세서를 불러옵니다. (보통 8비트/4비트 양자화 상태로 불러오기도 합니다)
     base_model, processor = load_model(config.model_id)
@@ -42,12 +45,13 @@ def run_training(config: TrainingConfig | None = None) -> None:
     model.print_trainable_parameters()
 
     print("\n[4/7] 데이터셋 구성 중...")
-    train_ds, val_ds, _, _ = build_dataloaders(
+    train_ds, val_ds, test_ds, *_ = build_dataloaders(
         qa_json_path=config.qa_json_path,
         raw_video_root=config.raw_video_root,
         label_root=config.label_root,
         processor=processor,
         train_ratio=config.train_ratio,
+        val_ratio=config.val_ratio,
         seed=config.seed,
         batch_size=config.per_device_train_batch_size,
         fps=config.fps,
@@ -62,6 +66,9 @@ def run_training(config: TrainingConfig | None = None) -> None:
     for cat, cnt in sorted(dist["by_category"].items()):
         print(f"  {cat:<30} {cnt:>4}샘플  {'█' * (cnt // 5)}")
     print(f"  {'합계':<30} {dist['total']:>4}샘플 ({dist['unique_videos']}개 비디오)")
+
+    print("\n[4.5/7] 라벨 마스킹 검증 중...")
+    _verify_label_masking(train_ds, processor)
 
     print("\n[5/7] TrainingArguments 구성 중...")
     checkpoint_path = Path(config.checkpoint_dir)
@@ -98,6 +105,10 @@ def run_training(config: TrainingConfig | None = None) -> None:
         label_names=["labels"],       # Trainer가 loss 계산에 labels 키를 인식하도록
     )
 
+    if config.smoke_test:
+        print("\n[5.5/7] Smoke test 실행 중...")
+        _run_smoke_test(config, train_ds)
+
     print("\n[6/7] 학습 시작...")
     trainer = Trainer(
         model=model,
@@ -113,10 +124,117 @@ def run_training(config: TrainingConfig | None = None) -> None:
     model.save_pretrained(str(final_dir))
     processor.save_pretrained(str(final_dir))
     print(f"  저장 완료: {final_dir}")
+    _finalize_checkpoint(final_dir)
 
-    metrics = trainer.evaluate()
+    metrics = trainer.evaluate(eval_dataset=test_ds)
     print(f"\n  eval_loss: {metrics.get('eval_loss', 'N/A'):.4f}")
     print("\n========== 학습 완료 ==========")
+
+
+def _validate_data_files(config: TrainingConfig) -> None:
+    """학습 전 QA JSON / 원본 MP4 / 라벨 JSON 파일의 3방향 매칭을 확인한다.
+
+    매칭 결과가 0개면 경로 설정이 잘못된 것이므로 RuntimeError를 발생시킨다.
+    """
+    import json
+
+    with open(config.qa_json_path, encoding="utf-8") as f:
+        qa_data = json.load(f)
+
+    raw_mp4s    = list(Path(config.raw_video_root).rglob("*.mp4"))
+    label_jsons = list(Path(config.label_root).rglob("*.json"))
+    raw_stems   = {p.stem for p in raw_mp4s}
+    label_stems = {p.stem for p in label_jsons}
+    qa_stems    = {Path(e["video_id"]).stem for e in qa_data}
+    matched     = qa_stems & raw_stems & label_stems
+
+    print(f"  Raw 비디오 : {len(raw_mp4s)}개")
+    print(f"  Label JSON : {len(label_jsons)}개")
+    print(f"  QA 항목    : {len(qa_data)}개")
+    print(f"  3방향 매칭 : {len(matched)}개")
+
+    if len(matched) == 0:
+        raise RuntimeError("3방향 매칭 결과가 0개입니다. 경로 설정을 확인하세요.")
+
+
+def _verify_label_masking(train_ds, processor) -> None:
+    """첫 번째 학습 샘플의 SFT 라벨 마스킹(-100 구간)이 올바른지 확인한다.
+
+    답변 구간이 0이면 데이터셋 전처리 버그일 가능성이 높으므로 경고를 출력한다.
+    """
+    sample      = train_ds[0]
+    input_ids   = sample["input_ids"]
+    labels      = sample["labels"]
+    answer_mask = labels != -100
+
+    print(f"  전체 시퀀스 : {len(input_ids)} 토큰")
+    print(f"  마스킹 구간 : {(~answer_mask).sum().item()} 토큰 (-100)")
+    print(f"  답변 구간   : {answer_mask.sum().item()} 토큰")
+
+    if answer_mask.sum().item() == 0:
+        print("  ⚠ 경고: 답변 구간이 0입니다. 데이터셋 전처리를 확인하세요.")
+        return
+
+    decoded = processor.tokenizer.decode(input_ids[answer_mask], skip_special_tokens=True)
+    print(f"  디코딩 답변 : {decoded!r}")
+
+
+def _run_smoke_test(config: TrainingConfig, train_ds) -> None:
+    """별도 임시 모델+Trainer로 2 스텝만 실행해 파이프라인 전체를 빠르게 검증한다.
+
+    완료 후 메모리를 즉시 해제해 본 학습에서 OOM이 발생하지 않도록 한다.
+    """
+    print("  (별도 임시 모델로 2 스텝 실행 중...)")
+    smoke_base, _ = load_model(config.model_id)
+    if config.gradient_checkpointing:
+        smoke_base.enable_input_require_grads()
+
+    smoke_model = get_peft_model(smoke_base, LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        target_modules=config.target_modules,
+        lora_dropout=config.lora_dropout,
+        bias=config.lora_bias,
+    ))
+
+    Trainer(
+        model=smoke_model,
+        args=TrainingArguments(
+            output_dir="/tmp/smoke_test",
+            max_steps=2,
+            per_device_train_batch_size=1,
+            bf16=config.bf16,
+            fp16=config.fp16,
+            gradient_checkpointing=config.gradient_checkpointing,
+            remove_unused_columns=False,
+            label_names=["labels"],
+            report_to="none",
+            logging_steps=1,
+        ),
+        train_dataset=train_ds,
+        data_collator=TrafficAccidentQADataset.collate_fn,
+    ).train()
+
+    print("  ✓ Smoke test 통과")
+    del smoke_model, smoke_base
+    torch.cuda.empty_cache()
+
+
+def _finalize_checkpoint(final_dir: Path) -> None:
+    """저장된 어댑터 파일 목록을 출력하고, safetensors를 best.pt로 변환 저장한다."""
+    from safetensors.torch import load_file
+
+    print("\n[체크포인트 파일 목록]")
+    for f in sorted(final_dir.iterdir()):
+        print(f"  {f.name}  ({f.stat().st_size / 1e6:.1f} MB)")
+
+    safetensors_path = final_dir / "adapter_model.safetensors"
+    if safetensors_path.exists():
+        weights = load_file(str(safetensors_path))
+        best_pt = final_dir.parent / "best.pt"
+        torch.save(weights, str(best_pt))
+        print(f"\n  best.pt 저장: {best_pt} ({best_pt.stat().st_size / 1e6:.1f} MB, {len(weights)}개 파라미터)")
 
 
 def _print_config(config: TrainingConfig) -> None:
@@ -193,6 +311,7 @@ def _parse_args() -> TrainingConfig:
         report_to=args.report_to,
         max_steps=2 if args.smoke_test else args.max_steps,
         no_auto_gpu=args.no_auto_gpu,
+        smoke_test=args.smoke_test,
     )
 
 

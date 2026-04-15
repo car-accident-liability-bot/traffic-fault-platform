@@ -48,8 +48,10 @@ class TrainingConfig:
     max_pixels: int = 360 * 420 # 너무 크면 OOM 발생
     max_seq_len: int = 512      # 텍스트 토큰 최대 길이
 
-    # 분할
-    train_ratio: float = 0.875
+    # 분할 (video 단위 7:2:1)
+    train_ratio: float = 0.7
+    val_ratio: float = 0.2
+    # test 비율은 1 - train_ratio - val_ratio (기본 0.1)
     seed: int = 42
     question_types: list[str] | None = None
 
@@ -64,5 +66,6 @@ class TrainingConfig:
     dataloader_num_workers: int = 0
 
     # CLI 전용 제어 플래그 (run_training에는 영향 없음)
-    max_steps: int = -1       # -1이면 num_train_epochs 기준으로 전체 학습. --smoke-test 시 자동으로 2로 설정됨
-    no_auto_gpu: bool = False # True면 _detect_gpu_settings()의 자동 오버라이드를 건너뜀. bf16/fp16/fps/max_pixels를 직접 제어하고 싶을 때 사용
+    max_steps: int = -1        # -1이면 num_train_epochs 기준으로 전체 학습. --smoke-test 시 자동으로 2로 설정됨
+    no_auto_gpu: bool = False  # True면 _detect_gpu_settings()의 자동 오버라이드를 건너뜀. bf16/fp16/fps/max_pixels를 직접 제어하고 싶을 때 사용
+    smoke_test: bool = False   # True면 별도 임시 모델로 2 스텝만 실행해 파이프라인 전체를 빠르게 검증 (OOM·코드 오류 사전 점검용)

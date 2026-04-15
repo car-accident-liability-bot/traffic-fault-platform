@@ -14,6 +14,7 @@ dependencies = [
     "peft>=0.11",
     "qwen-vl-utils>=0.0.8",
     "accelerate>=0.30",
+    "safetensors>=0.4",      # 모델 가중치 저장/로드 및 best.pt 변환
     "av",                    # 비디오 디코딩 (qwen-vl-utils 의존성)
 ]
 

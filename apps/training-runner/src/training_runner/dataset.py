@@ -269,7 +269,9 @@ def build_dataloaders(
     label_root: str | Path,
     processor: AutoProcessor,
     *,
-    train_ratio: float = 0.875,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.2,
+    # test 비율은 1 - train_ratio - val_ratio (기본 0.1)
     seed: int = 42,
     batch_size: int = 1,
     fps: float = 1.0,
@@ -277,8 +279,14 @@ def build_dataloaders(
     max_seq_len: int = 512,
     question_types: list[str] | None = None,
     num_workers: int = 0,
-) -> tuple[TrafficAccidentQADataset, TrafficAccidentQADataset, DataLoader, DataLoader]:
-    """video 단위 train/val 분할 후 DataLoader 쌍 반환."""
+) -> tuple[
+    TrafficAccidentQADataset, TrafficAccidentQADataset, TrafficAccidentQADataset,
+    DataLoader, DataLoader, DataLoader,
+]:
+    """video 단위 train/val/test 분할 후 Dataset·DataLoader 3쌍 반환.
+
+    반환 순서: train_ds, val_ds, test_ds, train_loader, val_loader, test_loader
+    """
     full_ds = TrafficAccidentQADataset(
         qa_json_path, raw_video_root, label_root, processor,
         fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
@@ -292,32 +300,34 @@ def build_dataloaders(
     rng = random.Random(seed)
     rng.shuffle(unique_ids)
 
-    n_train = int(len(unique_ids) * train_ratio)
-    train_set = set(unique_ids[:n_train])
-    val_set = set(unique_ids[n_train:])
+    n_total = len(unique_ids)
+    n_train = int(n_total * train_ratio)
+    n_val   = int(n_total * val_ratio)
+    # 정수 반올림 오차가 쌓이지 않도록 test는 나머지 전부를 가져간다
+    train_ids = set(unique_ids[:n_train])
+    val_ids   = set(unique_ids[n_train:n_train + n_val])
+    test_ids  = set(unique_ids[n_train + n_val:])
 
-    train_idx = [i for i, s in enumerate(all_samples) if s.video_id in train_set]
-    val_idx = [i for i, s in enumerate(all_samples) if s.video_id in val_set]
+    train_idx = [i for i, s in enumerate(all_samples) if s.video_id in train_ids]
+    val_idx   = [i for i, s in enumerate(all_samples) if s.video_id in val_ids]
+    test_idx  = [i for i, s in enumerate(all_samples) if s.video_id in test_ids]
 
     print(
         f"[build_dataloaders] "
-        f"학습: {len(train_set)}개 비디오 / {len(train_idx)}샘플 | "
-        f"검증: {len(val_set)}개 비디오 / {len(val_idx)}샘플"
+        f"학습: {len(train_ids)}개 비디오 / {len(train_idx)}샘플 | "
+        f"검증: {len(val_ids)}개 비디오 / {len(val_idx)}샘플 | "
+        f"테스트: {len(test_ids)}개 비디오 / {len(test_idx)}샘플"
     )
 
-    # 추출한 인덱스를 이용해 최종 Train Dataset과 Val Dataset 객체를 생성합니다.
     _kw = dict(fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len, question_types=question_types)
     train_ds = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=train_idx, **_kw)
-    val_ds = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=val_idx, **_kw)
+    val_ds   = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=val_idx,   **_kw)
+    test_ds  = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=test_idx,  **_kw)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        collate_fn=TrafficAccidentQADataset.collate_fn,
-        num_workers=num_workers, pin_memory=torch.cuda.is_available(),
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        collate_fn=TrafficAccidentQADataset.collate_fn,
-        num_workers=num_workers, pin_memory=torch.cuda.is_available(),
-    )
-    return train_ds, val_ds, train_loader, val_loader
+    _loader_kw = dict(collate_fn=TrafficAccidentQADataset.collate_fn,
+                      num_workers=num_workers, pin_memory=torch.cuda.is_available())
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  **_loader_kw)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, **_loader_kw)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, **_loader_kw)
+
+    return train_ds, val_ds, test_ds, train_loader, val_loader, test_loader
