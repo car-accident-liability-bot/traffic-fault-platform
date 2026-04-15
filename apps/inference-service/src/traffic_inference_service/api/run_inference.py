@@ -182,7 +182,11 @@ def load_inference_objects(
     base_model, _ = load_model(base_model_id)
 
     print(f"[INFO] 어댑터 로드 중: {adapter_path}")
-    model = PeftModel.from_pretrained(base_model, adapter_path)
+    model = PeftModel.from_pretrained(
+    base_model,
+    adapter_path,
+    local_files_only=True 
+)
 
     # final_adapter 안에 processor도 저장돼 있으므로 여기서 로드
     print("[INFO] processor 로드 중...")
