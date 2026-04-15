@@ -15,7 +15,7 @@ from .run_inference import load_inference_objects, predict_one, QUESTION_MAP
 # =========================
 
 BASE_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
-ADAPTER_PATH = r"D:\traffic-fault-platform\apps\inference-service\src\traffic_inference_service\api\final_adapter"
+ADAPTER_PATH = "/content/final_adapter"
 
 # =========================
 # FastAPI 앱 생성
