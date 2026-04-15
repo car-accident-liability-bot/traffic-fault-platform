@@ -59,6 +59,8 @@ def run_training(config: TrainingConfig | None = None) -> None:
         max_seq_len=config.max_seq_len,
         question_types=config.question_types,
         num_workers=config.dataloader_num_workers,
+        system_prompt=config.system_prompt,
+        max_samples_per_category=config.max_samples_per_category,
     )
 
     dist = train_ds.get_distribution()
@@ -249,6 +251,10 @@ def _print_config(config: TrainingConfig) -> None:
     print(f"  fps / max_pixels  : {config.fps} / {config.max_pixels}")
     print(f"  bf16 / fp16       : {config.bf16} / {config.fp16}")
     print(f"  체크포인트        : {config.checkpoint_dir}")
+    if config.experiment_name:
+        print(f"  실험 이름         : {config.experiment_name}")
+    if config.max_samples_per_category is not None:
+        print(f"  카테고리별 최대   : {config.max_samples_per_category}개 (파일럿 모드)")
     gpu_info = (
         f"{torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB)"
         if torch.cuda.is_available() else "CPU"

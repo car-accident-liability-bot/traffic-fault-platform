@@ -65,6 +65,19 @@ class TrainingConfig:
     run_name: str = "qwen3_vl_4b_traffic_lora"
     dataloader_num_workers: int = 0
 
+    # 시스템 프롬프트 (experiment_config에서 오버라이드)
+    system_prompt: str = (
+        "당신은 교통사고 영상을 분석하는 전문 분석가입니다. "
+        "제공된 블랙박스 영상을 주의 깊게 관찰하고, "
+        "사고 상황에 대한 질문에 정확하고 간결하게 답변하세요."
+    )
+
+    # 실험 식별자 (experiment_runner가 설정)
+    experiment_name: str = ""
+
+    # 파일럿 모드: 카테고리(case_code)별 최대 샘플 수 제한. None이면 전체 사용
+    max_samples_per_category: int | None = None
+
     # CLI 전용 제어 플래그 (run_training에는 영향 없음)
     max_steps: int = -1        # -1이면 num_train_epochs 기준으로 전체 학습. --smoke-test 시 자동으로 2로 설정됨
     no_auto_gpu: bool = False  # True면 _detect_gpu_settings()의 자동 오버라이드를 건너뜀. bf16/fp16/fps/max_pixels를 직접 제어하고 싶을 때 사용

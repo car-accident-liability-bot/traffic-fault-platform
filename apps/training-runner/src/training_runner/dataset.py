@@ -68,6 +68,7 @@ class TrafficAccidentQADataset(Dataset):
         question_types: list[str] | None = None, # 사용할 질문 타입 목록 (None이면 전체 사용)
         indices: list[int] | None = None,        # 전체 샘플 중 사용할 인덱스 목록 (None이면 전체 사용)
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        max_samples_per_category: int | None = None,  # Phase 1 파일럿: 카테고리별 최대 샘플 수
     ) -> None:
         self.qa_json_path = Path(qa_json_path)
         self.raw_video_root = Path(raw_video_root)
@@ -78,6 +79,7 @@ class TrafficAccidentQADataset(Dataset):
         self.max_seq_len = max_seq_len
         self.question_types = set(question_types or QUESTION_TYPES)
         self.system_prompt = system_prompt
+        self.max_samples_per_category = max_samples_per_category
 
         # 1. 파일 시스템을 뒤져서 (QA, Video, Label) 3가지가 모두 일치하는 유효한 전체 샘플을 구성한다.
         self._all_samples: list[VideoQASample] = self._build_index()
@@ -129,9 +131,14 @@ class TrafficAccidentQADataset(Dataset):
                     video_id=entry["video_id"], category=category,
                 ))
 
+        # max_samples_per_category: 카테고리(case_code)별 샘플 수 상한 (Phase 1 파일럿용)
+        if self.max_samples_per_category is not None:
+            samples = _cap_samples_per_category(samples, self.max_samples_per_category)
+
         print(
             f"[Dataset._build_index] QA: {len(qa_data)} | "
             f"매칭: {matched} | 미매칭: {len(unmatched)} | 샘플: {len(samples)}"
+            + (f" (카테고리별 최대 {self.max_samples_per_category}개 적용)" if self.max_samples_per_category else "")
         )
 
         # 매칭 실패한 케이스가 있다면 최대 5개까지 예시를 보여준다 (디버깅)
@@ -263,6 +270,30 @@ class TrafficAccidentQADataset(Dataset):
         return result
 
 
+def _cap_samples_per_category(
+    samples: list[VideoQASample], max_per_category: int
+) -> list[VideoQASample]:
+    """카테고리(case_code)별로 video_id 단위로 최대 N개 샘플만 남깁니다.
+
+    Phase 1 파일럿(case_code별 10개)과 Phase 2 soft capping(200개)에 사용됩니다.
+    video_id 단위로 제한해 데이터 릭을 방지합니다.
+    """
+    from collections import defaultdict
+
+    # category → video_id 집합
+    cat_video_ids: dict[str, list[str]] = defaultdict(list)
+    for s in samples:
+        if s.video_id not in cat_video_ids[s.category]:
+            cat_video_ids[s.category].append(s.video_id)
+
+    # 카테고리별 허용 video_id (최대 max_per_category개)
+    allowed_ids: set[str] = set()
+    for cat, video_ids in cat_video_ids.items():
+        allowed_ids.update(video_ids[:max_per_category])
+
+    return [s for s in samples if s.video_id in allowed_ids]
+
+
 def build_dataloaders(
     qa_json_path: str | Path,
     raw_video_root: str | Path,
@@ -279,6 +310,8 @@ def build_dataloaders(
     max_seq_len: int = 512,
     question_types: list[str] | None = None,
     num_workers: int = 0,
+    system_prompt: str = TrafficAccidentQADataset.DEFAULT_SYSTEM_PROMPT,
+    max_samples_per_category: int | None = None,
 ) -> tuple[
     TrafficAccidentQADataset, TrafficAccidentQADataset, TrafficAccidentQADataset,
     DataLoader, DataLoader, DataLoader,
@@ -290,7 +323,8 @@ def build_dataloaders(
     full_ds = TrafficAccidentQADataset(
         qa_json_path, raw_video_root, label_root, processor,
         fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
-        question_types=question_types,
+        question_types=question_types, system_prompt=system_prompt,
+        max_samples_per_category=max_samples_per_category,
     )
     all_samples = full_ds.get_all_samples()
 
@@ -319,7 +353,11 @@ def build_dataloaders(
         f"테스트: {len(test_ids)}개 비디오 / {len(test_idx)}샘플"
     )
 
-    _kw = dict(fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len, question_types=question_types)
+    _kw = dict(
+        fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
+        question_types=question_types, system_prompt=system_prompt,
+        max_samples_per_category=max_samples_per_category,
+    )
     train_ds = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=train_idx, **_kw)
     val_ds   = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=val_idx,   **_kw)
     test_ds  = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=test_idx,  **_kw)
