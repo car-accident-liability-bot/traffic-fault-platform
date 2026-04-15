@@ -16,12 +16,12 @@ from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
 # =========================================================
 
 # train 코드에서 final_adapter를 저장한 폴더
-ADAPTER_PATH = r"/content/traffic-fault-platform/final_adapter"
+ADAPTER_PATH = r"D:\traffic-fault-platform\apps\inference-service\src\traffic_inference_service\api\final_adapter"
 
 # 학습에 사용한 베이스 모델과 동일해야 함
 # train 코드에서 config.model_id로 load_model(config.model_id)를 호출했으므로
 # 실제 학습 때 사용한 model_id와 맞춰야 함
-BASE_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+BASE_MODEL_ID = r"D:\traffic-fault-platform\packages\ai-core\src\traffic_ai_core\Qwen3_VL_4B_Instruct"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -191,9 +191,10 @@ def load_inference_objects(
     # final_adapter 안에 processor도 저장돼 있으므로 여기서 로드
     print("[INFO] processor 로드 중...")
     processor = AutoProcessor.from_pretrained(
-        adapter_path,
-        trust_remote_code=True,
-    )
+    base_model_id,
+    trust_remote_code=True,
+    local_files_only=True,
+)
 
     model.eval()
 
