@@ -8,10 +8,18 @@ version = "0.1.0"
 description = "Training and dataset preparation runner for the traffic fault platform"
 requires-python = ">=3.10"
 readme = "README.md"
-dependencies = []
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.51",
+    "peft>=0.11",
+    "qwen-vl-utils>=0.0.8",
+    "accelerate>=0.30",
+    "av",                    # 비디오 디코딩 (qwen-vl-utils 의존성)
+]
 
 [project.scripts]
 traffic-build-pipeline-subset = "training_runner.cli.build_pipeline_subset:main"
+traffic-train-qwen3-vl = "training_runner.train:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
