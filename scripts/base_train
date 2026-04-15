@@ -318,6 +318,9 @@ def save_best_checkpoint(trainer: Trainer, processor: Any) -> None:
 # =========================================================
 def main():
     set_seed(SEED)
+
+    if os.path.exists(OUTPUT_DIR):
+        shutil.rmtree(OUTPUT_DIR)
     ensure_dir(OUTPUT_DIR)
 
     if not os.path.exists(TRAIN_JSON_PATH):
@@ -346,7 +349,6 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        overwrite_output_dir=True,
         num_train_epochs=NUM_EPOCHS,
         learning_rate=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
@@ -395,7 +397,3 @@ def main():
     print(f"[INFO] best checkpoint (최종 저장 경로): {BEST_OUTPUT_DIR}")
     print(f"[INFO] trainer가 기록한 best checkpoint: {trainer.state.best_model_checkpoint}")
     print(f"[INFO] best metric: {trainer.state.best_metric}")
-
-
-if __name__ == "__main__":
-    main()
