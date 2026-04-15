@@ -1,0 +1,194 @@
+[
+  {
+    "video_id": "bb_1_150223_vehicle_48_265.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_180611_vehicle_210_40072.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_160322_vehicle_244_25095.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "0:100"
+  },
+  {
+    "video_id": "bb_1_160805_vehicle_127_188.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "40:60"
+  },
+  {
+    "video_id": "bb_1_180625_vehicle_210_36680.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 A"
+  },
+  {
+    "video_id": "bb_1_140617_vehicle_196_058.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_190302_vehicle_311_098.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_160704_vehicle_187_050.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_200805_vehicle_260_22290.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "0:100"
+  },
+  {
+    "video_id": "bb_1_160508_vehicle_250_21559.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "80:20"
+  },
+  {
+    "video_id": "bb_1_181109_vehicle_205_32806.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "60:40"
+  },
+  {
+    "video_id": "bb_1_160708_vehicle_110_153.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "60:40"
+  },
+  {
+    "video_id": "bb_1_200212_vehicle_241_37926.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 A"
+  },
+  {
+    "video_id": "bb_1_210201_vehicle_236_31703.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "30:70"
+  },
+  {
+    "video_id": "bb_1_210709_vehicle_315_052.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "25:75"
+  },
+  {
+    "video_id": "bb_1_150104_vehicle_241_43538.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "0:100"
+  },
+  {
+    "video_id": "bb_1_120608_vehicle_192_024.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "30:70"
+  },
+  {
+    "video_id": "bb_1_201120_vehicle_13_013.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_210419_vehicle_313_030.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "70:30"
+  },
+  {
+    "video_id": "bb_1_150803_vehicle_227_21872.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "20:80"
+  },
+  {
+    "video_id": "bb_3_200501_vehicle_202_20807.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "20:80"
+  },
+  {
+    "video_id": "bb_1_190106_vehicle_242_34475.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "0:100"
+  },
+  {
+    "video_id": "bb_1_180422_vehicle_240_22140.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_210216_vehicle_47_281.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "25:75"
+  },
+  {
+    "video_id": "bb_1_141128_vehicle_21_044.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "20:80"
+  },
+  {
+    "video_id": "bb_1_210201_vehicle_236_31703.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_190523_vehicle_149_204.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "100:0"
+  },
+  {
+    "video_id": "bb_1_150803_vehicle_227_21872.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 B"
+  },
+  {
+    "video_id": "bb_1_160508_vehicle_250_21559.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 A"
+  },
+  {
+    "video_id": "bb_1_220502_vehicle_142_017.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "80:20"
+  },
+  {
+    "video_id": "bb_1_220322_vehicle_189_101.json",
+    "question_type": "fault_compare",
+    "question": "차량 A와 차량 B 중 어느 쪽이 더 큰 과실을 가지는가?",
+    "answer": "차량 A"
+  },
+  {
+    "video_id": "bb_1_180625_vehicle_210_36680.json",
+    "question_type": "fault_ratio",
+    "question": "차량 A와 차량 B의 과실비율은 얼마인가?",
+    "answer": "80:20"
+  }
+]
