@@ -17,7 +17,7 @@ import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
@@ -34,6 +34,8 @@ DEFAULT_HTTP_RANGE_RETRY_BACKOFF_SECONDS = 0.5
 HTTP_USER_AGENT = "traffic-fault-platform/0.1 (+subset-builder)"
 DEFAULT_REMOTE_SCAN_WORKERS = 2
 DEFAULT_LABEL_INSPECTION_WORKERS = 2
+DEFAULT_CASE_CODE_MIN_SAMPLES = 10
+DEFAULT_CASE_CODE_MAX_SAMPLES = 50
 DEFAULT_CACHE_DIR = Path("data/cache")
 ZIP_INVENTORY_CACHE_PATH = DEFAULT_CACHE_DIR / "zip_inventory_cache.json"
 LABEL_INSPECTION_CACHE_PATH = DEFAULT_CACHE_DIR / "label_inspection_cache.json"
@@ -44,6 +46,36 @@ _REMOTE_RANGE_SUPPORT_CACHE: dict[str, bool] = {}
 
 def _log_progress(message: str) -> None:
     print(f"[zip_subset] {message}", flush=True)
+
+
+def _case_code_sort_key(value: str) -> tuple[int, int | str, str]:
+    text = str(value)
+    if text.isdigit():
+        return (0, int(text), text)
+    return (1, text, text)
+
+
+def _format_case_code_preview(case_codes: Iterable[str], *, max_items: int = 20) -> str:
+    values = [str(item) for item in case_codes]
+    if not values:
+        return "[]"
+    sorted_values = sorted(values, key=_case_code_sort_key)
+    preview_values = sorted_values[:max_items]
+    preview_text = ", ".join(preview_values)
+    remaining = len(sorted_values) - len(preview_values)
+    if remaining > 0:
+        return f"[{preview_text}, ... (+{remaining})]"
+    return f"[{preview_text}]"
+
+
+def _extract_case_codes_from_cache_entries(cache_entries: dict[str, Any]) -> set[str]:
+    case_codes: set[str] = set()
+    for entry in cache_entries.values():
+        inspection = _deserialize_label_inspection_cache_entry(entry)
+        if inspection is None or inspection.case_code is None:
+            continue
+        case_codes.add(str(inspection.case_code))
+    return case_codes
 
 # 주석:
 # - 실제 공개 데이터셋 JSON 스키마가 문서로 고정돼 있지 않아서,
@@ -256,6 +288,7 @@ class SelectedSample:
     label_zip_public_url: str
     video_member_name: str
     label_member_name: str
+    case_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +311,7 @@ class ManifestRecord:
     label_zip_name: str
     video_member_name: str
     label_member_name: str
+    case_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -295,10 +329,12 @@ class LabelQualityOptions:
     """subset 생성 전 라벨 품질 필터 옵션."""
 
     enabled: bool = True
-    require_fault_ratio: bool = True
-    require_road_type: bool = True
+    require_fault_ratio: bool = False
+    require_road_type: bool = False
     require_case_code: bool = True
-    rare_case_code_min_frequency: int = 2
+    rare_case_code_min_frequency: int = DEFAULT_CASE_CODE_MIN_SAMPLES
+    min_samples_per_case_code: int = DEFAULT_CASE_CODE_MIN_SAMPLES
+    max_samples_per_case_code: int = DEFAULT_CASE_CODE_MAX_SAMPLES
 
 
 def _stable_cache_key(payload: dict[str, Any]) -> str:
@@ -1680,6 +1716,7 @@ def build_records_for_bundle(
             label_zip_public_url=bundle.label_zip_public_url,
             video_member_name=raw_members[sample_id],
             label_member_name=label_members[sample_id],
+            case_code=None,
         )
         for sample_id in matched_ids
     ]
@@ -2155,6 +2192,7 @@ def preprocess_category_records(
 
     grouped_records = _group_records_by_label_zip(category_records)
     cache_entries = _load_cache_entries(LABEL_INSPECTION_CACHE_PATH)
+    cache_case_codes = _extract_case_codes_from_cache_entries(cache_entries)
     group_entries = list(grouped_records.items())
     total_groups = len(group_entries)
     completed_groups = 0
@@ -2238,6 +2276,7 @@ def preprocess_category_records(
 
     filtered_category_records: dict[str, list[SelectedSample]] = {}
     excluded_by_reason: Counter[str] = Counter()
+    excluded_case_codes_by_reason: dict[str, set[str]] = {}
 
     for category, records in category_records.items():
         kept_records: list[SelectedSample] = []
@@ -2273,13 +2312,63 @@ def preprocess_category_records(
 
             if exclusion_reason is not None:
                 excluded_by_reason[exclusion_reason] += 1
+                if inspection.case_code is not None:
+                    excluded_case_codes_by_reason.setdefault(exclusion_reason, set()).add(str(inspection.case_code))
                 continue
 
-            kept_records.append(record)
+            kept_records.append(replace(record, case_code=inspection.case_code))
 
         filtered_category_records[category] = kept_records
 
     total_after_filter = sum(len(records) for records in filtered_category_records.values())
+    filtered_case_code_counter: Counter[str] = Counter(
+        record.case_code
+        for records in filtered_category_records.values()
+        for record in records
+        if record.case_code is not None
+    )
+    filtered_case_codes = set(filtered_case_code_counter.keys())
+    current_case_codes = set(case_code_counter.keys())
+    eligible_case_codes = {
+        case_code
+        for case_code, count in case_code_counter.items()
+        if count >= options.min_samples_per_case_code
+    }
+    rare_case_codes = current_case_codes - eligible_case_codes
+    post_run_cache_case_codes = _extract_case_codes_from_cache_entries(cache_entries)
+    pre_run_cache_only_case_codes = cache_case_codes - current_case_codes
+    current_only_vs_pre_run_cache_case_codes = current_case_codes - cache_case_codes
+    inspected_not_in_sampling_case_codes = post_run_cache_case_codes - filtered_case_codes
+    sampling_only_case_codes = filtered_case_codes - post_run_cache_case_codes
+    rare_excluded_case_codes = excluded_case_codes_by_reason.get("rare_case_code", set())
+    non_rare_excluded_case_codes: set[str] = set()
+    for reason, case_codes in excluded_case_codes_by_reason.items():
+        if reason == "rare_case_code":
+            continue
+        non_rare_excluded_case_codes.update(case_codes)
+
+    _log_progress(
+        "case_code 분포 요약: "
+        f"pre_run_cache_distinct={len(cache_case_codes)}, inspected_distinct={len(post_run_cache_case_codes)}, "
+        f"matched_run_distinct={len(current_case_codes)}, eligible_distinct={len(eligible_case_codes)}, "
+        f"sampling_pool_distinct={len(filtered_case_codes)}, rare_distinct={len(rare_case_codes)}"
+    )
+    _log_progress(
+        "case_code 차집합(사전 캐시 기준): "
+        f"pre_run_cache_only={len(pre_run_cache_only_case_codes)} {_format_case_code_preview(pre_run_cache_only_case_codes)}, "
+        f"current_only={len(current_only_vs_pre_run_cache_case_codes)} {_format_case_code_preview(current_only_vs_pre_run_cache_case_codes)}"
+    )
+    _log_progress(
+        "case_code 누락 목록(검사 완료 기준 -> 샘플링 풀): "
+        f"missing_from_sampling={len(inspected_not_in_sampling_case_codes)} {_format_case_code_preview(inspected_not_in_sampling_case_codes)}, "
+        f"sampling_only={len(sampling_only_case_codes)} {_format_case_code_preview(sampling_only_case_codes)}"
+    )
+    _log_progress(
+        "case_code 제외 사유 목록: "
+        f"rare_excluded={len(rare_excluded_case_codes)} {_format_case_code_preview(rare_excluded_case_codes)}, "
+        f"non_rare_excluded={len(non_rare_excluded_case_codes)} {_format_case_code_preview(non_rare_excluded_case_codes)}, "
+        f"missing_case_code_records={excluded_by_reason.get('missing_or_invalid_case_code', 0)}"
+    )
 
     summary: dict[str, Any] = {
         "enabled": True,
@@ -2288,13 +2377,34 @@ def preprocess_category_records(
             "require_road_type": options.require_road_type,
             "require_case_code": options.require_case_code,
             "rare_case_code_min_frequency": options.rare_case_code_min_frequency,
+            "min_samples_per_case_code": options.min_samples_per_case_code,
+            "max_samples_per_case_code": options.max_samples_per_case_code,
         },
+        "sampling_strategy": "case_code_cap",
         "total_before_filter": total_before_filter,
         "total_after_filter": total_after_filter,
         "excluded_total": total_before_filter - total_after_filter,
         "excluded_by_reason": dict(sorted(excluded_by_reason.items())),
+        "excluded_case_codes_by_reason": {
+            reason: sorted(case_codes, key=_case_code_sort_key)
+            for reason, case_codes in sorted(excluded_case_codes_by_reason.items())
+        },
         "road_type_frequency": dict(sorted(road_type_counter.items())),
-        "case_code_frequency": dict(sorted(case_code_counter.items())),
+        "case_code_frequency": dict(sorted(case_code_counter.items(), key=lambda item: _case_code_sort_key(str(item[0])))),
+        "filtered_case_code_frequency": dict(sorted(filtered_case_code_counter.items(), key=lambda item: _case_code_sort_key(str(item[0])))),
+        "pre_run_cache_case_code_distinct_count": len(cache_case_codes),
+        "post_run_cache_case_code_distinct_count": len(post_run_cache_case_codes),
+        "matched_run_case_code_distinct_count": len(current_case_codes),
+        "eligible_case_code_distinct_count": len(eligible_case_codes),
+        "rare_case_code_distinct_count": len(rare_case_codes),
+        "sampling_pool_case_code_distinct_count": len(filtered_case_codes),
+        "pre_run_cache_only_case_codes": sorted(pre_run_cache_only_case_codes, key=_case_code_sort_key),
+        "current_only_vs_pre_run_cache_case_codes": sorted(current_only_vs_pre_run_cache_case_codes, key=_case_code_sort_key),
+        "inspected_not_in_sampling_case_codes": sorted(inspected_not_in_sampling_case_codes, key=_case_code_sort_key),
+        "sampling_only_case_codes": sorted(sampling_only_case_codes, key=_case_code_sort_key),
+        "rare_case_codes": sorted(rare_case_codes, key=_case_code_sort_key),
+        "rare_excluded_case_codes": sorted(rare_excluded_case_codes, key=_case_code_sort_key),
+        "non_rare_excluded_case_codes": sorted(non_rare_excluded_case_codes, key=_case_code_sort_key),
     }
 
     _log_progress(
@@ -2308,28 +2418,70 @@ def sample_per_category(
     per_category: int,
     seed: int,
 ) -> list[SelectedSample]:
-    if per_category <= 0:
-        raise ValueError("per_category는 1 이상이어야 합니다.")
-
     rng = random.Random(seed)
+    case_code_to_records: dict[str, list[SelectedSample]] = {}
+
+    for category in sorted(category_records.keys()):
+        for record in sorted(category_records[category], key=lambda item: (item.sample_id, item.video_member_name, item.label_member_name)):
+            if record.case_code is None:
+                continue
+            case_code_to_records.setdefault(record.case_code, []).append(record)
+
+    total_case_codes = len(case_code_to_records)
+    eligible_case_codes = {
+        case_code for case_code, records in case_code_to_records.items()
+        if len(records) >= DEFAULT_CASE_CODE_MIN_SAMPLES
+    }
+    rare_case_codes = set(case_code_to_records.keys()) - eligible_case_codes
+    missing_case_code_count = sum(
+        1
+        for records in category_records.values()
+        for record in records
+        if record.case_code is None
+    )
+
     selected_records: list[SelectedSample] = []
-    total_categories = len(category_records)
+    selected_count_by_case_code: dict[str, int] = {}
 
-    _log_progress(f"카테고리 샘플링 시작: per_category={per_category}, seed={seed}, category_count={total_categories}")
-    for index, category in enumerate(sorted(category_records.keys()), start=1):
-        records = sorted(category_records[category], key=lambda item: item.sample_id)
+    _log_progress(
+        "case_code 샘플링 시작: "
+        f"min_count={DEFAULT_CASE_CODE_MIN_SAMPLES}, max_count={DEFAULT_CASE_CODE_MAX_SAMPLES}, seed={seed}, "
+        f"legacy_per_category_arg={per_category}, sampling_pool_case_code_count={total_case_codes}, "
+        f"eligible_case_code_count={len(eligible_case_codes)}, rare_case_code_count={len(rare_case_codes)}, "
+        f"missing_case_code_records={missing_case_code_count}"
+    )
+    _log_progress(
+        "case_code 샘플링 제외 목록: "
+        f"rare_case_codes={len(rare_case_codes)} {_format_case_code_preview(rare_case_codes)}"
+    )
 
-        if len(records) <= per_category:
+    ordered_case_codes = sorted(case_code_to_records.keys(), key=_case_code_sort_key)
+    for index, case_code in enumerate(ordered_case_codes, start=1):
+        records = sorted(case_code_to_records[case_code], key=lambda item: (item.sample_id, item.category, item.video_member_name))
+        available = len(records)
+
+        if available < DEFAULT_CASE_CODE_MIN_SAMPLES:
+            chosen: list[SelectedSample] = []
+        elif available <= DEFAULT_CASE_CODE_MAX_SAMPLES:
             chosen = records
         else:
-            chosen = sorted(rng.sample(records, per_category), key=lambda item: item.sample_id)
+            chosen = sorted(
+                rng.sample(records, DEFAULT_CASE_CODE_MAX_SAMPLES),
+                key=lambda item: (item.sample_id, item.category, item.video_member_name),
+            )
 
-        selected_records.extend(chosen)
+        if chosen:
+            selected_records.extend(chosen)
+            selected_count_by_case_code[case_code] = len(chosen)
+
         _log_progress(
-            f"카테고리 샘플링 진행중: completed={index}/{total_categories}, category={category}, selected={len(chosen)}, available={len(records)}"
+            "case_code 샘플링 진행중: "
+            f"completed={index}/{total_case_codes}, case_code={case_code}, selected={len(chosen)}, available={available}"
         )
 
-    _log_progress(f"카테고리 샘플링 완료: total_selected={len(selected_records)}")
+    _log_progress(
+        f"case_code 샘플링 완료: selected_case_codes={len(selected_count_by_case_code)}, total_selected={len(selected_records)}"
+    )
     return selected_records
 
 
@@ -2347,6 +2499,7 @@ def to_manifest_records(records: Iterable[SelectedSample]) -> list[ManifestRecor
             label_zip_name=record.label_zip_name,
             video_member_name=record.video_member_name,
             label_member_name=record.label_member_name,
+            case_code=record.case_code,
         )
         for record in records
     ]
@@ -2368,6 +2521,7 @@ def write_manifest_csv(records: Iterable[SelectedSample], output_path: Path) -> 
         "label_zip_name",
         "video_member_name",
         "label_member_name",
+        "case_code",
     ]
 
     with output_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
@@ -2401,17 +2555,21 @@ def write_summary_json(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    selected_count_by_category = Counter(record.category for record in selected_records)
+    selected_count_by_case_code = Counter(record.case_code for record in selected_records if record.case_code is not None)
 
     summary = {
         "dataset_base_url": metadata.dataset_base_url,
         "split": metadata.split,
         "raw_dir_name": metadata.raw_dir_name,
         "label_dir_name": metadata.label_dir_name,
-        "per_category": per_category,
+        "legacy_per_category_arg": per_category,
+        "case_code_min_count": DEFAULT_CASE_CODE_MIN_SAMPLES,
+        "case_code_max_count": DEFAULT_CASE_CODE_MAX_SAMPLES,
+        "sampling_strategy": "case_code_cap",
+        "storage_strategy": "case_code_folders",
         "seed": seed,
         "total_selected": len(selected_records),
-        "selected_count_by_category": dict(sorted(selected_count_by_category.items())),
+        "selected_count_by_case_code": dict(sorted(selected_count_by_case_code.items())),
         "diagnostics": diagnostics,
     }
     if preprocessing_summary is not None:
@@ -2440,23 +2598,38 @@ def _group_records_by_zip_source(
     return grouped
 
 
+def _resolve_case_code_dir_name(record: SelectedSample) -> str:
+    if record.case_code is None:
+        raise ValueError(f"case_code가 없는 레코드는 추출할 수 없습니다: sample_id={record.sample_id}")
+    return str(record.case_code)
+
+
 def extract_selected_files(records: list[SelectedSample], output_root: Path) -> None:
+    records_with_case_code = [record for record in records if record.case_code is not None]
+    skipped_without_case_code = len(records) - len(records_with_case_code)
+    if skipped_without_case_code > 0:
+        _log_progress(
+            f"case_code 없는 레코드는 추출에서 제외합니다: skipped={skipped_without_case_code}"
+        )
+
     raw_root = output_root / "raw"
     label_root = output_root / "label"
     raw_root.mkdir(parents=True, exist_ok=True)
     label_root.mkdir(parents=True, exist_ok=True)
 
-    raw_group = _group_records_by_zip_source(records, kind="raw")
-    label_group = _group_records_by_zip_source(records, kind="label")
+    raw_group = _group_records_by_zip_source(records_with_case_code, kind="raw")
+    label_group = _group_records_by_zip_source(records_with_case_code, kind="label")
 
-    _log_progress(f"파일 추출 시작: raw_zip_groups={len(raw_group)}, label_zip_groups={len(label_group)}, total_records={len(records)}")
+    _log_progress(
+        f"파일 추출 시작: raw_zip_groups={len(raw_group)}, label_zip_groups={len(label_group)}, total_records={len(records_with_case_code)}, storage_strategy=case_code_folders"
+    )
 
     for index, ((local_path, access_url, zip_name), group_records) in enumerate(raw_group.items(), start=1):
         with _open_zip_file(local_path=local_path, access_url=access_url, zip_name=zip_name) as zip_file:
             for record in group_records:
-                category_dir = raw_root / record.category
-                category_dir.mkdir(parents=True, exist_ok=True)
-                target_path = category_dir / Path(record.video_member_name).name
+                case_code_dir = raw_root / _resolve_case_code_dir_name(record)
+                case_code_dir.mkdir(parents=True, exist_ok=True)
+                target_path = case_code_dir / Path(record.video_member_name).name
 
                 with zip_file.open(record.video_member_name) as source, target_path.open("wb") as target:
                     shutil.copyfileobj(source, target)
@@ -2465,9 +2638,9 @@ def extract_selected_files(records: list[SelectedSample], output_root: Path) -> 
     for index, ((local_path, access_url, zip_name), group_records) in enumerate(label_group.items(), start=1):
         with _open_zip_file(local_path=local_path, access_url=access_url, zip_name=zip_name) as zip_file:
             for record in group_records:
-                category_dir = label_root / record.category
-                category_dir.mkdir(parents=True, exist_ok=True)
-                target_path = category_dir / Path(record.label_member_name).name
+                case_code_dir = label_root / _resolve_case_code_dir_name(record)
+                case_code_dir.mkdir(parents=True, exist_ok=True)
+                target_path = case_code_dir / Path(record.label_member_name).name
 
                 with zip_file.open(record.label_member_name) as source, target_path.open("wb") as target:
                     shutil.copyfileobj(source, target)
