@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -294,6 +294,94 @@ def _cap_samples_per_category(
     return [s for s in samples if s.video_id in allowed_ids]
 
 
+def stratified_split_by_category(
+    samples: list[VideoQASample],
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> tuple[set[str], set[str], set[str]]:
+    """카테고리(case_code)별 계층적 train/val/test 분할.
+
+    전체 video_id를 무작위 셔플한 뒤 나누는 기존 방식은 운이 나쁘면 특정 카테고리가
+    test에만 몰리는 클래스 불균형이 생깁니다.
+    이 함수는 각 카테고리 안에서 독립적으로 비율 분할하여 모든 split에
+    카테고리가 균등하게 포함되도록 보장합니다.
+
+    Args:
+        samples:     VideoQASample 전체 리스트 (video_id·category 속성만 사용)
+        train_ratio: 학습 비율 (기본 0.7)
+        val_ratio:   검증 비율 (기본 0.2)
+        seed:        재현성 시드
+
+    Returns:
+        (train_ids, val_ids, test_ids) — 각각 video_id 문자열 집합
+
+    Edge-case:
+        카테고리당 비디오 수가 적을 때:
+          n=1 → train만,  n=2 → train 1 + test 1,  n=3 → train 2 + test 1
+    """
+    # category별 unique video_id 수집 (정렬로 시드 고정 시 재현성 보장)
+    cat_to_ids: dict[str, list[str]] = defaultdict(list)
+    seen: set[str] = set()
+    for s in samples:
+        if s.video_id not in seen:
+            seen.add(s.video_id)
+            cat_to_ids[s.category].append(s.video_id)
+
+    rng = random.Random(seed)
+
+    train_ids: set[str] = set()
+    val_ids:   set[str] = set()
+    test_ids:  set[str] = set()
+
+    for cat, video_ids in sorted(cat_to_ids.items()):
+        ids = sorted(video_ids)   # 정렬 후 셔플 → 시드 고정 시 재현성 보장
+        rng.shuffle(ids)
+
+        n       = len(ids)
+        n_train = max(1, int(round(n * train_ratio)))
+        n_val   = int(round(n * val_ratio))
+
+        # 합이 전체를 초과하지 않도록 클램프
+        n_train = min(n_train, n)
+        n_val   = min(n_val,   n - n_train)
+        # test는 나머지 전부 (반올림 오차 누적 방지)
+
+        train_ids.update(ids[:n_train])
+        val_ids.update(ids[n_train : n_train + n_val])
+        test_ids.update(ids[n_train + n_val :])
+
+    return train_ids, val_ids, test_ids
+
+
+def _log_split_stats(
+    all_samples: list[VideoQASample],
+    train_ids: set[str],
+    val_ids: set[str],
+    test_ids: set[str],
+) -> None:
+    """카테고리별 분할 분포를 요약 출력합니다."""
+    cat_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"train": 0, "val": 0, "test": 0})
+    for s in all_samples:
+        if s.video_id in train_ids:
+            cat_counts[s.category]["train"] += 1
+        elif s.video_id in val_ids:
+            cat_counts[s.category]["val"] += 1
+        elif s.video_id in test_ids:
+            cat_counts[s.category]["test"] += 1
+
+    cats_missing_test = [c for c, v in cat_counts.items() if v["test"] == 0]
+    cats_missing_val  = [c for c, v in cat_counts.items() if v["val"] == 0]
+    print(
+        f"[분할 통계] 카테고리 수: {len(cat_counts)} | "
+        f"test 비어있는 카테고리: {len(cats_missing_test)} | "
+        f"val 비어있는 카테고리: {len(cats_missing_val)}"
+    )
+    if cats_missing_test:
+        print(f"  → test 없음 (데이터 부족): {cats_missing_test[:5]}"
+              + (" ..." if len(cats_missing_test) > 5 else ""))
+
+
 def build_dataloaders(
     qa_json_path: str | Path,
     raw_video_root: str | Path,
@@ -328,19 +416,11 @@ def build_dataloaders(
     )
     all_samples = full_ds.get_all_samples()
 
-    # [데이터 릭 방지 로직]
-    # 영상 1개에 질문이 여러 개일 수 있습니다. 무조건 '비디오 ID' 단위로 분할해야 학습/검증 세트 간 데이터 릭이 발생하지 않습니다.
-    unique_ids = sorted({s.video_id for s in all_samples})
-    rng = random.Random(seed)
-    rng.shuffle(unique_ids)
-
-    n_total = len(unique_ids)
-    n_train = int(n_total * train_ratio)
-    n_val   = int(n_total * val_ratio)
-    # 정수 반올림 오차가 쌓이지 않도록 test는 나머지 전부를 가져간다
-    train_ids = set(unique_ids[:n_train])
-    val_ids   = set(unique_ids[n_train:n_train + n_val])
-    test_ids  = set(unique_ids[n_train + n_val:])
+    # [계층적 분할 — case_code별 균등 분할로 클래스 불균형 방지]
+    # 카테고리마다 독립적으로 비율 분할하므로, video_id 단위 분리도 자동 보장됩니다.
+    train_ids, val_ids, test_ids = stratified_split_by_category(
+        all_samples, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
+    )
 
     train_idx = [i for i, s in enumerate(all_samples) if s.video_id in train_ids]
     val_idx   = [i for i, s in enumerate(all_samples) if s.video_id in val_ids]
@@ -352,6 +432,7 @@ def build_dataloaders(
         f"검증: {len(val_ids)}개 비디오 / {len(val_idx)}샘플 | "
         f"테스트: {len(test_ids)}개 비디오 / {len(test_idx)}샘플"
     )
+    _log_split_stats(all_samples, train_ids, val_ids, test_ids)
 
     _kw = dict(
         fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,

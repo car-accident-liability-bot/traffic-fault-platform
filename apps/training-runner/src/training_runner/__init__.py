@@ -3,6 +3,7 @@ from training_runner.dataset import (
     TrafficAccidentQADataset,
     VideoQASample,
     build_dataloaders,
+    stratified_split_by_category,
 )
 from training_runner.configs import TrainingConfig
 from training_runner.train import run_training
