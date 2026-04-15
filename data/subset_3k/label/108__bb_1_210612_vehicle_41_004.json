@@ -1,0 +1,27 @@
+{
+	"info": {
+		"name": "accident",
+		"description": "",
+		"url": ""
+	},
+	"video": {
+		"video_name": "bb_1_210612_vehicle_41_004",
+		"video_date": "210612",
+		"filming_way": "bb",
+		"video_point_of_view": 1,
+		"accident_negligence_rateA": 20,
+		"accident_negligence_rateB": 80,
+		"traffic_accident_type": 108,
+		"accident_object": 0,
+		"accident_place": 3,
+		"accident_place_feature": 10,
+		"vehicle_a_progress_info": 20,
+		"vehicle_b_progress_info": 23,
+		"damage_location": "",
+		"related_laws": "",
+		"violation_of_law": "",
+		"additional_elements": "",
+		"violation_factor": "",
+		"weather": ""
+	}
+}

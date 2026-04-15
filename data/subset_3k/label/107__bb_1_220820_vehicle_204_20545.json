@@ -1,0 +1,27 @@
+{
+	"info": {
+		"name": "accident",
+		"description": "",
+		"url": ""
+	},
+	"video": {
+		"video_name": "bb_1_220820_vehicle_204_20545",
+		"video_date": "211130",
+		"filming_way": "bb",
+		"video_point_of_view": 1,
+		"accident_negligence_rateA": 30,
+		"accident_negligence_rateB": 70,
+		"traffic_accident_type": 107,
+		"accident_object": 0,
+		"accident_place": 3,
+		"accident_place_feature": 10,
+		"vehicle_a_progress_info": 19,
+		"vehicle_b_progress_info": 22,
+		"damage_location": "",
+		"related_laws": "",
+		"violation_of_law": "",
+		"additional_elements": "",
+		"violation_factor": "",
+		"weather": ""
+	}
+}
