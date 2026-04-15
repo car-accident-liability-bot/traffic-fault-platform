@@ -16,7 +16,7 @@ from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
 # =========================================================
 
 # train 코드에서 final_adapter를 저장한 폴더
-ADAPTER_PATH = r"C:\Users\user1\Downloads\final_adapter"
+ADAPTER_PATH = r"/content/traffic-fault-platform/final_adapter"
 
 # 학습에 사용한 베이스 모델과 동일해야 함
 # train 코드에서 config.model_id로 load_model(config.model_id)를 호출했으므로
