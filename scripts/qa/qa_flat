@@ -1,0 +1,216 @@
+import json
+import random
+import requests
+from collections import defaultdict
+
+# =========================================================
+# 설정
+# =========================================================
+QA_URL = "https://data.taeo-dev.com/dataset/traffic/qaset/qa_dataset_3k.json"
+VIDEO_BASE_URL = "https://data.taeo-dev.com/dataset/traffic/subset/raw"
+
+OUTPUT_ALL = "flat_all.json"
+OUTPUT_TRAIN = "train_flat.json"
+OUTPUT_VAL = "val_flat.json"
+
+VAL_RATIO = 0.2
+SEED = 42
+
+# =========================================================
+# 유틸 함수
+# =========================================================
+def safe_str(value):
+    """
+    answer 값을 문자열로 통일.
+    None이면 빈 문자열 반환.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def normalize_video_stem(video_id: str) -> str:
+    """
+    예:
+    bb_1_141119_vehicle_36_171.json -> bb_1_141119_vehicle_36_171
+    """
+    if video_id.endswith(".json"):
+        return video_id[:-5]
+    return video_id
+
+
+def infer_folder_from_video_id(video_id: str) -> str:
+    """
+    사용자 설명상 서브셋 QA와 영상이 이미 매핑된다고 했으므로,
+    video_id에서 마지막 숫자를 folder로 사용한다고 가정.
+
+    예:
+    bb_1_141119_vehicle_36_171.json -> folder = '171'
+
+    만약 실제 규칙이 다르면 이 함수만 수정하면 됨.
+    """
+    stem = normalize_video_stem(video_id)
+    parts = stem.split("_")
+    return parts[-1]
+
+
+def build_video_url(video_id: str) -> str:
+    """
+    최종 영상 URL 생성
+    """
+    stem = normalize_video_stem(video_id)
+    folder = infer_folder_from_video_id(video_id)
+    return f"{VIDEO_BASE_URL}/{folder}/{stem}.mp4"
+
+
+def load_qa_json_from_url(url: str):
+    """
+    원격 JSON 로드
+    """
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def flatten_qa_dataset(raw_data):
+    """
+    원본 qa_dataset_3k.json 구조를 flat 형태로 변환
+
+    출력 샘플 예시:
+    {
+      "video_id": "bb_1_141119_vehicle_36_171.json",
+      "video_stem": "bb_1_141119_vehicle_36_171",
+      "video_folder": "171",
+      "video_path": "https://.../171/bb_1_141119_vehicle_36_171.mp4",
+      "question_type": "accident_place",
+      "question": "해당 사고는 어떤 도로 환경에서 발생했는가?",
+      "answer": "직선 도로"
+    }
+    """
+    flat_samples = []
+
+    for item in raw_data:
+        video_id = item.get("video_id", "").strip()
+        qa_pairs = item.get("qa_pairs", [])
+
+        if not video_id or not qa_pairs:
+            continue
+
+        video_stem = normalize_video_stem(video_id)
+        video_folder = infer_folder_from_video_id(video_id)
+        video_path = build_video_url(video_id)
+
+        for qa in qa_pairs:
+            question_type = safe_str(qa.get("question_type"))
+            question = safe_str(qa.get("question"))
+            answer = safe_str(qa.get("answer"))
+
+            # 빈 값 샘플은 제외
+            if not question or not answer:
+                continue
+
+            sample = {
+                "video_id": video_id,
+                "video_stem": video_stem,
+                "video_folder": video_folder,
+                "video_path": video_path,
+                "question_type": question_type,
+                "question": question,
+                "answer": answer,
+            }
+            flat_samples.append(sample)
+
+    return flat_samples
+
+
+def split_by_video(flat_samples, val_ratio=0.2, seed=42):
+    """
+    영상 단위로 train/val 분리
+    같은 video_stem의 샘플은 train 또는 val 한쪽에만 들어가게 함
+    """
+    random.seed(seed)
+
+    video_to_samples = defaultdict(list)
+    for sample in flat_samples:
+        video_to_samples[sample["video_stem"]].append(sample)
+
+    video_keys = list(video_to_samples.keys())
+    random.shuffle(video_keys)
+
+    val_size = int(len(video_keys) * val_ratio)
+    val_video_keys = set(video_keys[:val_size])
+
+    train_samples = []
+    val_samples = []
+
+    for video_key, samples in video_to_samples.items():
+        if video_key in val_video_keys:
+            val_samples.extend(samples)
+        else:
+            train_samples.extend(samples)
+
+    return train_samples, val_samples
+
+
+def save_json(data, path):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def print_stats(name, data):
+    print(f"\n[{name}]")
+    print(f"샘플 수: {len(data)}")
+
+    qtype_count = defaultdict(int)
+    video_count = set()
+
+    for item in data:
+        qtype_count[item["question_type"]] += 1
+        video_count.add(item["video_stem"])
+
+    print(f"영상 수: {len(video_count)}")
+    print("question_type 분포:")
+    for k, v in sorted(qtype_count.items()):
+        print(f"  - {k}: {v}")
+
+
+# =========================================================
+# 메인 실행
+# =========================================================
+def main():
+    print("[1] QA 데이터 다운로드 중...")
+    raw_data = load_qa_json_from_url(QA_URL)
+    print(f"원본 영상 항목 수: {len(raw_data)}")
+
+    print("\n[2] flat 데이터 생성 중...")
+    flat_samples = flatten_qa_dataset(raw_data)
+    print(f"flat 전체 샘플 수: {len(flat_samples)}")
+
+    print("\n[3] 영상 단위 train/val split 중...")
+    train_samples, val_samples = split_by_video(
+        flat_samples,
+        val_ratio=VAL_RATIO,
+        seed=SEED
+    )
+
+    print_stats("ALL", flat_samples)
+    print_stats("TRAIN", train_samples)
+    print_stats("VAL", val_samples)
+
+    print("\n[4] JSON 저장 중...")
+    save_json(flat_samples, OUTPUT_ALL)
+    save_json(train_samples, OUTPUT_TRAIN)
+    save_json(val_samples, OUTPUT_VAL)
+
+    print("\n저장 완료:")
+    print(f" - {OUTPUT_ALL}")
+    print(f" - {OUTPUT_TRAIN}")
+    print(f" - {OUTPUT_VAL}")
+
+    print("\n[5] 샘플 3개 미리보기")
+    for sample in train_samples[:3]:
+        print(json.dumps(sample, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
