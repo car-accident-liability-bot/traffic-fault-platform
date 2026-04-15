@@ -10,6 +10,7 @@ from peft import PeftModel
 from transformers import AutoProcessor
 
 from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
+from traffic_inference_service.api.prompt_config import SYSTEM_PROMPT, QUESTION_MAP
 
 # =========================================================
 # 설정
@@ -19,15 +20,6 @@ BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "Qwen/Qwen3-VL-4B-Instruct")
 ADAPTER_PATH = os.getenv("ADAPTER_PATH", "./artifacts/final_adapter")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-QUESTION_MAP = {
-    "accident_place": "이 사고는 어떤 도로 환경에서 발생했는가?",
-    "accident_place_feature": "이 사고 장소의 특징은 무엇인가?",
-    "vehicle_a_progress": "차량 A는 사고 직전 어떤 진행 상태였는가?",
-    "vehicle_b_progress": "차량 B는 사고 직전 어떤 진행 상태였는가?",
-    "fault_ratio": "이 사고의 과실비율은 어떻게 되는가?",
-    "fault_compare": "과실비율 기준으로 더 큰 과실을 가진 차량은 누구인가?",
-}
 
 # FastAPI에서 재사용할 전역 캐시
 _MODEL = None
@@ -85,12 +77,6 @@ def build_messages(video_path: str, question_type: str) -> list[dict]:
 
     question = QUESTION_MAP[question_type]
 
-    system_text = (
-        "당신은 교통사고 영상을 보고 질문에 대해 짧고 정확하게 답하는 AI입니다. "
-        "반드시 질문에 대한 핵심 답만 간단히 출력하세요. "
-        "불필요한 설명은 하지 마세요."
-    )
-
     user_text = (
         f"question_type: {question_type}\n"
         f"question: {question}\n\n"
@@ -100,7 +86,7 @@ def build_messages(video_path: str, question_type: str) -> list[dict]:
     messages = [
         {
             "role": "system",
-            "content": [{"type": "text", "text": system_text}],
+            "content": [{"type": "text", "text": SYSTEM_PROMPT}],
         },
         {
             "role": "user",
