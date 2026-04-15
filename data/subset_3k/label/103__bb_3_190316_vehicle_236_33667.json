@@ -1,0 +1,27 @@
+{
+    "info": {
+        "name": "accident",
+        "description": "",
+        "url": ""
+    },
+    "video": {
+        "video_name": "bb_3_190316_vehicle_236_33667",
+        "video_date": "190316",
+        "filming_way": "bb",
+        "video_point_of_view": 3,
+        "accident_negligence_rateA": 60,
+        "accident_negligence_rateB": 40,
+        "accident_object": 0,
+        "accident_place": 2,
+        "accident_place_feature": 9,
+        "vehicle_a_progress_info": 47,
+        "vehicle_b_progress_info": 173,
+        "damage_location": "",
+        "related_laws": "",
+        "violation_of_law": "",
+        "additional_elements": "",
+        "violation_factor": "",
+        "weather": "",
+        "traffic_accident_type": 103
+    }
+}

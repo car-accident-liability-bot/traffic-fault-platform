@@ -1,0 +1,27 @@
+{
+    "info": {
+        "name": "accident",
+        "description": "",
+        "url": ""
+    },
+    "video": {
+        "video_name": "bb_1_190413_vehicle_192_053",
+        "video_date": "190413",
+        "filming_way": "bb",
+        "video_point_of_view": 1,
+        "accident_negligence_rateA": 100,
+        "accident_negligence_rateB": 0,
+        "accident_object": 0,
+        "accident_place": 2,
+        "accident_place_feature": 50,
+        "vehicle_a_progress_info": 148,
+        "vehicle_b_progress_info": 151,
+        "damage_location": "",
+        "related_laws": "",
+        "violation_of_law": "",
+        "additional_elements": "",
+        "violation_factor": "",
+        "weather": "",
+        "traffic_accident_type": 101
+    }
+}
