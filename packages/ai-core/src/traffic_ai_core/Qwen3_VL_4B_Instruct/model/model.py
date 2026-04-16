@@ -25,6 +25,7 @@ class TrafficAccidentVLM:
             self.model_id,
             torch_dtype=dtype,
             trust_remote_code=True,
+            low_cpu_mem_usage=False,
         )
 
         self.processor = AutoProcessor.from_pretrained(
@@ -42,10 +43,5 @@ class TrafficAccidentVLM:
 
 
 def load_model(model_id: str = TrafficAccidentVLM.DEFAULT_MODEL_ID):
-    """
-    편의 함수
-    from ai_core import load_model
-    model, processor = load_model()
-    """
     vlm = TrafficAccidentVLM(model_id)
     return vlm.get_model(), vlm.get_processor()
