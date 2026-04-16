@@ -78,6 +78,10 @@ class TrainingConfig:
     # 파일럿 모드: 카테고리(case_code)별 최대 샘플 수 제한. None이면 전체 사용
     max_samples_per_category: int | None = None
 
+    # 비디오 프레임 캐시 디렉토리. 빈 문자열이면 캐시 비활성화.
+    # Colab: '/content/frame_cache' 권장 (SSD 150GB, 파일럿 ~3.6GB 사용)
+    video_cache_dir: str = ""
+
     # CLI 전용 제어 플래그 (run_training에는 영향 없음)
     max_steps: int = -1        # -1이면 num_train_epochs 기준으로 전체 학습. --smoke-test 시 자동으로 2로 설정됨
     no_auto_gpu: bool = False  # True면 _detect_gpu_settings()의 자동 오버라이드를 건너뜀. bf16/fp16/fps/max_pixels를 직접 제어하고 싶을 때 사용

@@ -69,6 +69,7 @@ class TrafficAccidentQADataset(Dataset):
         indices: list[int] | None = None,        # 전체 샘플 중 사용할 인덱스 목록 (None이면 전체 사용)
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_samples_per_category: int | None = None,  # Phase 1 파일럿: 카테고리별 최대 샘플 수
+        video_cache_dir: str | Path | None = None,    # 프레임 캐시 디렉토리 (None이면 캐시 없음)
     ) -> None:
         self.qa_json_path = Path(qa_json_path)
         self.raw_video_root = Path(raw_video_root)
@@ -80,6 +81,15 @@ class TrafficAccidentQADataset(Dataset):
         self.question_types = set(question_types or QUESTION_TYPES)
         self.system_prompt = system_prompt
         self.max_samples_per_category = max_samples_per_category
+
+        # 비디오 프레임 캐시: 같은 비디오가 QA 페어 수만큼 반복 디코딩되는 것을 방지
+        # _cache_dir: npy 파일 저장 위치 (None이면 디스크 캐시 미사용)
+        # _frame_cache: 프로세스 내 메모리 캐시 (DataLoader worker별로 독립 유지됨)
+        self._cache_dir: Path | None = Path(video_cache_dir) if video_cache_dir else None
+        self._frame_cache: dict[str, list] = {}
+        if self._cache_dir:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[Dataset] 프레임 캐시 활성화: {self._cache_dir}")
 
         # 1. 파일 시스템을 뒤져서 (QA, Video, Label) 3가지가 모두 일치하는 유효한 전체 샘플을 구성한다.
         self._all_samples: list[VideoQASample] = self._build_index()
@@ -161,12 +171,51 @@ class TrafficAccidentQADataset(Dataset):
     def __len__(self) -> int:
         return len(self._samples)
 
+    def _get_video_inputs(self, video_path: str) -> list:
+        """비디오 프레임을 캐시에서 로드하거나 디코딩 후 캐시에 저장합니다.
+
+        캐시 키: {video_stem}_fps{fps}_px{max_pixels}
+        - 메모리 캐시(_frame_cache): 프로세스 내 dict, worker 재시작 없이 반복 접근 시 빠름
+        - 디스크 캐시(_cache_dir): .npy 파일로 저장, num_workers>0 환경에서도 공유 가능
+        """
+        import numpy as np
+
+        # 1. 메모리 캐시 확인
+        if video_path in self._frame_cache:
+            return self._frame_cache[video_path]
+
+        # 2. 디스크 캐시 확인
+        cache_file: Path | None = None
+        if self._cache_dir is not None:
+            cache_key = f"{Path(video_path).stem}_fps{self.fps}_px{self.max_pixels}"
+            cache_file = self._cache_dir / f"{cache_key}.npy"
+            if cache_file.exists():
+                frames = np.load(str(cache_file))
+                video_inputs = [frames]
+                self._frame_cache[video_path] = video_inputs
+                return video_inputs
+
+        # 3. 새로 디코딩 (process_vision_info에 비디오만 담은 최소 메시지 전달)
+        _, video_inputs = process_vision_info([{
+            "role": "user",
+            "content": [{"type": "video", "video": video_path,
+                         "fps": self.fps, "max_pixels": self.max_pixels}],
+        }])
+
+        # 4. 디스크 캐시 저장
+        if cache_file is not None and video_inputs:
+            np.save(str(cache_file), video_inputs[0])
+
+        # 5. 메모리 캐시 저장
+        self._frame_cache[video_path] = video_inputs
+        return video_inputs
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """
         Qwen3-VL 입력 양식에 맞게 텍스트와 시각 정보 처리 후 텐서 반환.
         - messages: 시스템 프롬프트 + 사용자 질문(텍스트+비디오) + 모델 답변으로 구성된 대화 형식
         - processor.apply_chat_template: Qwen3-VL이 요구하는 텍스트 포맷으로 변환 (토크나이저 역할 포함)
-        - process_vision_info: 메시지에서 비디오 정보 추출하여 모델 입력에 맞는 텐서로 변환
+        - _get_video_inputs: 프레임을 캐시(디스크/메모리)에서 가져오거나 디코딩 후 캐시에 저장
         - SFT 레이블 마스킹: 프롬프트 구간은 -100으로 마스킹하여 CrossEntropyLoss 계산에서 제외 (답변 구간만 학습 대상)
         """
         sample = self._samples[idx]
@@ -177,13 +226,13 @@ class TrafficAccidentQADataset(Dataset):
                 "role": "user",
                 "content": [
                     {
-                        "type": "video", 
+                        "type": "video",
                         "video": str(sample.video_path),
-                        "fps": self.fps, 
+                        "fps": self.fps,
                         "max_pixels": self.max_pixels
                     },
                     {
-                        "type": "text", 
+                        "type": "text",
                         "text": sample.question
                     },
                 ],
@@ -201,8 +250,9 @@ class TrafficAccidentQADataset(Dataset):
             messages[:-1], tokenize=False, add_generation_prompt=True
         )
 
-        # 3. 시각 정보 처리: 메시지에서 비디오 정보를 추출하여 모델 입력에 맞는 텐서로 변환합니다.
-        image_inputs, video_inputs = process_vision_info(messages)
+        # 3. 비디오 프레임 로드 (캐시 우선, 미스 시 디코딩 후 저장)
+        image_inputs = None
+        video_inputs = self._get_video_inputs(str(sample.video_path))
 
         # 4. processor를 사용하여 텍스트와 시각 정보를 모델 입력 양식에 맞게 텐서로 변환합니다.
         full_batch = self.processor(
@@ -400,6 +450,7 @@ def build_dataloaders(
     num_workers: int = 0,
     system_prompt: str = TrafficAccidentQADataset.DEFAULT_SYSTEM_PROMPT,
     max_samples_per_category: int | None = None,
+    video_cache_dir: str | Path | None = None,
 ) -> tuple[
     TrafficAccidentQADataset, TrafficAccidentQADataset, TrafficAccidentQADataset,
     DataLoader, DataLoader, DataLoader,
@@ -438,6 +489,7 @@ def build_dataloaders(
         fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
         question_types=question_types, system_prompt=system_prompt,
         max_samples_per_category=max_samples_per_category,
+        video_cache_dir=video_cache_dir,
     )
     train_ds = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=train_idx, **_kw)
     val_ds   = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=val_idx,   **_kw)

@@ -61,6 +61,7 @@ def run_training(config: TrainingConfig | None = None) -> None:
         num_workers=config.dataloader_num_workers,
         system_prompt=config.system_prompt,
         max_samples_per_category=config.max_samples_per_category,
+        video_cache_dir=config.video_cache_dir or None,
     )
 
     dist = train_ds.get_distribution()
