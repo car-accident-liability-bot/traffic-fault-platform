@@ -16,8 +16,8 @@ class TrainingConfig:
     model_id: str = "Qwen/Qwen3-VL-4B-Instruct"
 
     # LoRA
-    lora_r: int = 16           # Rank (LoRA 차원)
-    lora_alpha: int = 32       # Scaling factor (LoRA 학습률 조절)
+    lora_r: int = 8            # Rank (LoRA 차원)
+    lora_alpha: int = 16       # Scaling factor (LoRA 학습률 조절)
     lora_dropout: float = 0.05 # Dropout 확률 (과적합 방지)
     lora_bias: str = "none"    # "none" / "all" / "lora_only"
 
@@ -44,8 +44,8 @@ class TrainingConfig:
     fp16: bool = False
 
     # 비디오 입력
-    fps: float = 1.0
-    max_pixels: int = 360 * 420 # 너무 크면 OOM 발생
+    fps: float = 0.5
+    max_pixels: int = 320 * 320 # 너무 크면 OOM 발생
     max_seq_len: int = 512      # 텍스트 토큰 최대 길이
 
     # 분할 (video 단위 7:2:1)
@@ -57,13 +57,30 @@ class TrainingConfig:
 
     # 로깅
     logging_steps: int = 10
-    eval_steps: int = 50
-    save_steps: int = 50
-    save_total_limit: int = 3            # 최근 3개 체크포인트만 저장 (이전 체크포인트는 자동 삭제)
+    eval_steps: int = 200
+    save_steps: int = 200
+    save_total_limit: int = 2            # 최근 2개 체크포인트만 저장 (이전 체크포인트는 자동 삭제)
     load_best_model_at_end: bool = True
     report_to: str = "none"              # "none" / "wandb" / "tensorboard"
     run_name: str = "qwen3_vl_4b_traffic_lora"
-    dataloader_num_workers: int = 0
+    dataloader_num_workers: int = 2
+
+    # 시스템 프롬프트 (experiment_config에서 오버라이드)
+    system_prompt: str = (
+        "당신은 교통사고 영상을 분석하는 전문 분석가입니다. "
+        "제공된 블랙박스 영상을 주의 깊게 관찰하고, "
+        "사고 상황에 대한 질문에 정확하고 간결하게 답변하세요."
+    )
+
+    # 실험 식별자 (experiment_runner가 설정)
+    experiment_name: str = ""
+
+    # 파일럿 모드: 카테고리(case_code)별 최대 샘플 수 제한. None이면 전체 사용
+    max_samples_per_category: int | None = None
+
+    # 비디오 프레임 캐시 디렉토리. 빈 문자열이면 캐시 비활성화.
+    # Colab: '/content/frame_cache' 권장 (SSD 150GB, 파일럿 ~3.6GB 사용)
+    video_cache_dir: str = ""
 
     # CLI 전용 제어 플래그 (run_training에는 영향 없음)
     max_steps: int = -1        # -1이면 num_train_epochs 기준으로 전체 학습. --smoke-test 시 자동으로 2로 설정됨

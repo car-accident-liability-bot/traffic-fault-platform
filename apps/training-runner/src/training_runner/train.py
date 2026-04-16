@@ -5,11 +5,28 @@ from pathlib import Path
 
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import Trainer, TrainingArguments
+from transformers import Trainer, TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
 from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
 from training_runner.configs import TrainingConfig
 from training_runner.dataset import TrafficAccidentQADataset, build_dataloaders
+from training_runner.evaluation.evaluator import diagnose_gradient_flow
+
+
+class _GradDiagCallback(TrainerCallback):
+    """첫 번째 backward 이후 gradient flow를 1회 진단합니다."""
+
+    def on_step_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        model=None,
+        **kwargs,
+    ) -> None:
+        if state.global_step == 1:
+            print("\n[Gradient 흐름 진단 — step 1]")
+            diagnose_gradient_flow(model)
 
 
 def run_training(config: TrainingConfig | None = None) -> None:
@@ -60,6 +77,9 @@ def run_training(config: TrainingConfig | None = None) -> None:
         max_seq_len=config.max_seq_len,
         question_types=config.question_types,
         num_workers=config.dataloader_num_workers,
+        system_prompt=config.system_prompt,
+        max_samples_per_category=config.max_samples_per_category,
+        video_cache_dir=config.video_cache_dir or None,
     )
 
     dist = train_ds.get_distribution()
@@ -117,6 +137,7 @@ def run_training(config: TrainingConfig | None = None) -> None:
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=TrafficAccidentQADataset.collate_fn,
+        callbacks=[_GradDiagCallback()],
     )
     trainer.train()
 
@@ -349,6 +370,10 @@ def _print_config(config: TrainingConfig) -> None:
     print(f"  fps / max_pixels  : {config.fps} / {config.max_pixels}")
     print(f"  bf16 / fp16       : {config.bf16} / {config.fp16}")
     print(f"  체크포인트        : {config.checkpoint_dir}")
+    if config.experiment_name:
+        print(f"  실험 이름         : {config.experiment_name}")
+    if config.max_samples_per_category is not None:
+        print(f"  카테고리별 최대   : {config.max_samples_per_category}개 (파일럿 모드)")
     gpu_info = (
         f"{torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB)"
         if torch.cuda.is_available() else "CPU"
