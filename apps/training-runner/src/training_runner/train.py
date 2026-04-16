@@ -45,6 +45,7 @@ def run_training(config: TrainingConfig | None = None) -> None:
     model.print_trainable_parameters()
 
     print("\n[4/7] 데이터셋 구성 중...")
+    # 테스트셋 인자로 넘겨서 평가지표 계산해야함
     train_ds, val_ds, test_ds, *_ = build_dataloaders(
         qa_json_path=config.qa_json_path,
         raw_video_root=config.raw_video_root,
@@ -129,6 +130,105 @@ def run_training(config: TrainingConfig | None = None) -> None:
     metrics = trainer.evaluate(eval_dataset=test_ds)
     print(f"\n  eval_loss: {metrics.get('eval_loss', 'N/A'):.4f}")
     print("\n========== 학습 완료 ==========")
+
+    # === 상세 평가 (방어 코드 포함) ===
+    print("\n + 상세 평가 수행 중...")
+
+    # 1. 패키지 체크
+    try:
+        from traffic_metrics import QAEvaluator
+        from training_runner.evaluation import convert_trainer_predictions
+    except ImportError as e:
+        print(f"⚠️  평가 모듈 import 실패: {e}")
+        print("   → pip install -e packages/traffic-metrics")
+        print("\n========== 평가 건너뜀 ==========")
+        return
+
+    # 2. 테스트셋 체크
+    if test_ds is None or len(test_ds) == 0:
+        print("⚠️  테스트셋이 비어있어 상세 평가를 건너뜁니다.")
+        print("\n========== 평가 건너뜀 ==========")
+        return
+
+    # 3. 추론 (OOM 방어)
+    try:
+        test_predictions = trainer.predict(test_ds)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print("⚠️  GPU 메모리 부족으로 상세 평가 실패")
+            print("   → per_device_eval_batch_size를 줄여보세요")
+            import torch
+            torch.cuda.empty_cache()
+            print("\n========== 평가 실패 (학습은 성공) ==========")
+            return
+        else:
+            raise
+
+    # 4. 변환 및 평가
+    try:
+        evaluation_data = convert_trainer_predictions(
+            test_predictions, test_ds, processor
+        )
+
+        evaluator = QAEvaluator()
+        detailed_results = evaluator.evaluate(evaluation_data)
+    except Exception as e:
+        print(f"⚠️  평가 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\n========== 평가 실패 (학습은 성공) ==========")
+        return
+
+    # 5. 콘솔 출력
+    print(f"\n=== 상세 평가 결과 ===")
+    print(f"Macro F1: {detailed_results['overall']['macro_f1']:.4f}")
+    print(f"총 샘플: {detailed_results['overall']['total_samples']}")
+    print(f"정답률: {detailed_results['overall']['accuracy']:.2%}")
+
+    print(f"\n[타입별 F1 Score]")
+    for q_type, type_metrics in detailed_results['per_type'].items():
+        f1 = type_metrics['f1']
+        support = type_metrics['support']
+        print(f"  {q_type:<25} F1={f1:.3f} (n={support})")
+
+        # 특수 메트릭 표시
+        if 'recall_highlighted' in type_metrics:
+            print(f"    → Recall={type_metrics['recall']:.3f}")
+        if 'mae' in type_metrics:
+            print(f"    → MAE={type_metrics['mae']:.2f}")
+        if 'accuracy' in type_metrics:
+            print(f"    → Accuracy={type_metrics['accuracy']:.3f}")
+
+    # 6. 파일 저장 (checkpoint 디렉토리에만)
+    try:
+        import json
+        from pathlib import Path
+
+        output_path = Path(config.checkpoint_dir) / "evaluation_results.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(detailed_results, f, ensure_ascii=False, indent=2)
+        print(f"\n✅ 평가 결과 저장: {output_path}")
+    except Exception as e:
+        print(f"⚠️  결과 저장 실패: {e}")
+
+    # 7. WandB 로깅 (안전)
+    if config.report_to == "wandb":
+        try:
+            import wandb
+            wandb.log({
+                "test/macro_f1": detailed_results['overall']['macro_f1'],
+                "test/accuracy": detailed_results['overall']['accuracy'],
+                "test/total_samples": detailed_results['overall']['total_samples'],
+            })
+            for q_type, type_metrics in detailed_results['per_type'].items():
+                wandb.log({f"test/{q_type}/f1": type_metrics['f1']})
+            print("✅ WandB 로깅 완료!")
+        except Exception as e:
+            print(f"⚠️  WandB 로깅 실패: {e}")
+
+    print("\n========== 평가 완료 ==========")
 
 
 def _validate_data_files(config: TrainingConfig) -> None:
