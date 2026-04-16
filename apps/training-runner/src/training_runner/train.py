@@ -157,7 +157,6 @@ def run_training(config: TrainingConfig | None = None) -> None:
         if "out of memory" in str(e).lower():
             print("⚠️  GPU 메모리 부족으로 상세 평가 실패")
             print("   → per_device_eval_batch_size를 줄여보세요")
-            import torch
             torch.cuda.empty_cache()
             print("\n========== 평가 실패 (학습은 성공) ==========")
             return
