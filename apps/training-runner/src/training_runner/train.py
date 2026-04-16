@@ -5,11 +5,28 @@ from pathlib import Path
 
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import Trainer, TrainingArguments
+from transformers import Trainer, TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
 from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
 from training_runner.configs import TrainingConfig
 from training_runner.dataset import TrafficAccidentQADataset, build_dataloaders
+from training_runner.evaluation.evaluator import diagnose_gradient_flow
+
+
+class _GradDiagCallback(TrainerCallback):
+    """첫 번째 backward 이후 gradient flow를 1회 진단합니다."""
+
+    def on_step_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        model=None,
+        **kwargs,
+    ) -> None:
+        if state.global_step == 1:
+            print("\n[Gradient 흐름 진단 — step 1]")
+            diagnose_gradient_flow(model)
 
 
 def run_training(config: TrainingConfig | None = None) -> None:
@@ -119,6 +136,7 @@ def run_training(config: TrainingConfig | None = None) -> None:
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=TrafficAccidentQADataset.collate_fn,
+        callbacks=[_GradDiagCallback()],
     )
     trainer.train()
 

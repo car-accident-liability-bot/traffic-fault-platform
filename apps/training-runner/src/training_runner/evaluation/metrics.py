@@ -5,9 +5,9 @@ question_type별 1차 지표:
   fault_ratio           -> Exact Match (핵심 지표) + MAE (2차)
   fault_compare         -> Accuracy
   accident_place        -> ROUGE-L + Exact Match (2차)
-  accident_place_feature-> ROUGE-L
-  vehicle_a_progress    -> ROUGE-L
-  vehicle_b_progress    -> ROUGE-L
+  accident_place_feature-> ROUGE-L + BERTScore (2차)
+  vehicle_a_progress    -> ROUGE-L + BERTScore (2차)
+  vehicle_b_progress    -> ROUGE-L + BERTScore (2차)
 """
 from __future__ import annotations
 
@@ -28,6 +28,13 @@ _ROUGE_L_TYPES = {
 }
 _EM_TYPES = {"fault_ratio"}
 _ACC_TYPES = {"fault_compare"}
+
+# BERTScore 2차 지표 적용 대상
+_BERT_SCORE_TYPES = {
+    "accident_place_feature",
+    "vehicle_a_progress",
+    "vehicle_b_progress",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +133,58 @@ def fault_ratio_mae(prediction: str, reference: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# BERTScore (배치 처리 — 외부에서 일괄 계산 후 결과에 삽입)
+# ---------------------------------------------------------------------------
+
+def compute_bert_scores(
+    predictions: list[str],
+    references: list[str],
+    lang: str = "ko",
+    model_type: str | None = None,
+    device: str | None = None,
+    batch_size: int = 64,
+    verbose: bool = False,
+) -> list[float]:
+    """BERTScore F1을 배치로 계산해 리스트로 반환합니다.
+
+    Args:
+        predictions:  모델 생성 답변 리스트
+        references:   정답 텍스트 리스트
+        lang:         언어 코드 ('ko' → snunlp/KR-ELECTRA-discriminator 사용)
+        model_type:   명시적 모델 지정 시 lang 대신 사용 (예: 'klue/roberta-base')
+        device:       계산 장치 ('cuda', 'cpu' 등; None이면 자동 선택)
+        batch_size:   BERTScore 배치 크기
+        verbose:      진행 상황 출력 여부
+
+    Returns:
+        F1 점수 리스트 (0.0 ~ 1.0)
+
+    Raises:
+        ImportError: bert-score 패키지 미설치 시
+    """
+    try:
+        from bert_score import score as _bert_score_fn
+    except ImportError as exc:
+        raise ImportError(
+            "bert-score 패키지가 필요합니다: pip install bert-score"
+        ) from exc
+
+    if not predictions:
+        return []
+
+    kwargs: dict = dict(batch_size=batch_size, verbose=verbose)
+    if model_type:
+        kwargs["model_type"] = model_type
+    else:
+        kwargs["lang"] = lang
+    if device:
+        kwargs["device"] = device
+
+    _, _, f1 = _bert_score_fn(predictions, references, **kwargs)
+    return f1.tolist()
+
+
+# ---------------------------------------------------------------------------
 # 샘플 단위 지표 계산
 # ---------------------------------------------------------------------------
 
@@ -136,11 +195,16 @@ def compute_sample_metrics(
 ) -> dict[str, float | bool]:
     """단일 샘플의 모든 해당 지표를 계산합니다.
 
+    Note:
+        bert_score 필드는 None으로 초기화됩니다.
+        evaluator.run_evaluation() 내부에서 배치 계산 후 채워집니다.
+
     Returns:
         {
             "rouge_l": float,          # ROUGE-L 타입이면 계산, 아니면 None
             "exact_match": bool,       # EM 타입 또는 accident_place
             "mae": float,              # fault_ratio 타입이면 계산, 아니면 None
+            "bert_score": float|None,  # BERTScore 대상 타입이면 사후 채워짐
             "primary_score": float,    # question_type별 1차 지표 (비교에 사용)
         }
     """
@@ -148,6 +212,7 @@ def compute_sample_metrics(
         "rouge_l": None,
         "exact_match": None,
         "mae": None,
+        "bert_score": None,
         "primary_score": 0.0,
     }
 
@@ -158,6 +223,7 @@ def compute_sample_metrics(
         # accident_place는 EM도 함께 계산 (2차 지표)
         if question_type == "accident_place":
             result["exact_match"] = exact_match(prediction, reference)
+        # bert_score 대상 타입은 None 유지 — evaluator에서 배치 계산 후 삽입
 
     elif question_type in _EM_TYPES:
         em = exact_match(prediction, reference)
@@ -227,12 +293,14 @@ def aggregate_metrics(sample_results: list[dict]) -> dict:
 
     # 전체 지표
     all_rouge_l = [r["rouge_l"] for r in sample_results if r.get("rouge_l") is not None]
+    all_bert_score = [r["bert_score"] for r in sample_results if r.get("bert_score") is not None]
     fault_ratio_rows = [r for r in sample_results if r["question_type"] == "fault_ratio"]
     fault_compare_rows = [r for r in sample_results if r["question_type"] == "fault_compare"]
 
     overall = {
         "n_samples": len(sample_results),
         "rouge_l_mean": mean(all_rouge_l) if all_rouge_l else None,
+        "bert_score_mean": mean(all_bert_score) if all_bert_score else None,
         "fault_ratio_em": (
             mean(float(r["exact_match"]) for r in fault_ratio_rows)
             if fault_ratio_rows else None
@@ -269,6 +337,7 @@ def _summarize_bucket(rows: list[dict], question_type: str) -> dict:
     rouge_vals = [r["rouge_l"] for r in rows if r.get("rouge_l") is not None]
     em_vals = [r["exact_match"] for r in rows if r.get("exact_match") is not None]
     mae_vals = [r["mae"] for r in rows if r.get("mae") is not None]
+    bert_score_vals = [r["bert_score"] for r in rows if r.get("bert_score") is not None]
 
     if rouge_vals:
         summary["rouge_l_mean"] = mean(rouge_vals)
@@ -276,6 +345,8 @@ def _summarize_bucket(rows: list[dict], question_type: str) -> dict:
         summary["exact_match"] = mean(float(v) for v in em_vals)
     if mae_vals:
         summary["mae_mean"] = mean(mae_vals)
+    if bert_score_vals:
+        summary["bert_score_mean"] = mean(bert_score_vals)
 
     return summary
 
@@ -304,6 +375,9 @@ def format_summary(aggregated: dict, experiment_name: str = "") -> str:
     lines.append(
         f"  ROUGE-L 평균     : {_fmt(overall.get('rouge_l_mean'))}"
     )
+    lines.append(
+        f"  BERTScore 평균   : {_fmt(overall.get('bert_score_mean'))}"
+    )
 
     lines.append("\n[question_type별]")
     for qtype, stats in aggregated.get("by_question_type", {}).items():
@@ -314,6 +388,8 @@ def format_summary(aggregated: dict, experiment_name: str = "") -> str:
             parts.append(f"EM={_fmt(stats['exact_match'])}")
         if "mae_mean" in stats:
             parts.append(f"MAE={_fmt(stats['mae_mean'])}")
+        if "bert_score_mean" in stats:
+            parts.append(f"BERTScore={_fmt(stats['bert_score_mean'])}")
         lines.append(f"  {qtype:<30} {' | '.join(parts)}")
 
     worst = aggregated.get("worst_categories", [])

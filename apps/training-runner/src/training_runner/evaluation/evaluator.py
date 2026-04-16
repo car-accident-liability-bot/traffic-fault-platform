@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING
 import torch
 
 from training_runner.evaluation.metrics import (
+    _BERT_SCORE_TYPES,
     aggregate_metrics,
+    compute_bert_scores,
     compute_sample_metrics,
     format_summary,
 )
@@ -57,6 +59,11 @@ class EvaluatorConfig:
     )
     device: str = field(default_factory=_default_device)
     verbose: bool = True           # 진행 상황 출력 여부
+    # BERTScore 설정
+    compute_bertscore: bool = True          # BERTScore 계산 여부
+    bertscore_lang: str = "ko"              # BERTScore 언어 코드
+    bertscore_model_type: str | None = None # None이면 lang으로 자동 선택
+    bertscore_batch_size: int = 64          # BERTScore 배치 크기
 
 
 def run_evaluation(
@@ -116,6 +123,40 @@ def run_evaluation(
                 f"score={sample_metrics['primary_score']:.4f}  "
                 f"ETA {eta:.0f}s"
             )
+
+    # ── BERTScore 배치 계산 ──────────────────────────────────────
+    # 추론 완료 후 한 번에 계산해 GPU 메모리 스파이크를 최소화합니다.
+    if config.compute_bertscore:
+        bert_indices = [
+            i for i, r in enumerate(results)
+            if r["question_type"] in _BERT_SCORE_TYPES
+        ]
+        if bert_indices:
+            if config.verbose:
+                print(
+                    f"\n[Evaluator] BERTScore 계산 중 "
+                    f"({len(bert_indices)}개 샘플, lang={config.bertscore_lang}) ..."
+                )
+            preds = [results[i]["prediction"] for i in bert_indices]
+            refs  = [results[i]["answer"]     for i in bert_indices]
+            try:
+                bs_scores = compute_bert_scores(
+                    preds, refs,
+                    lang=config.bertscore_lang,
+                    model_type=config.bertscore_model_type,
+                    device=config.device,
+                    batch_size=config.bertscore_batch_size,
+                    verbose=config.verbose,
+                )
+                for i, score in zip(bert_indices, bs_scores):
+                    results[i]["bert_score"] = score
+                if config.verbose:
+                    print(f"  BERTScore 완료  평균 F1={sum(bs_scores)/len(bs_scores):.4f}")
+            except ImportError as exc:
+                if config.verbose:
+                    print(f"  [WARNING] BERTScore 건너뜀: {exc}")
+        elif config.verbose:
+            print("\n[Evaluator] BERTScore 대상 샘플 없음 — 건너뜀")
 
     aggregated = aggregate_metrics(results)
 
