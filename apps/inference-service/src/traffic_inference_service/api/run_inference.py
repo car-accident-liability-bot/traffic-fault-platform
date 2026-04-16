@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import requests
 from pathlib import Path
 from typing import Optional
 
@@ -18,9 +19,16 @@ from traffic_inference_service.api.prompt_config import QUESTION_MAP, SYSTEM_PRO
 # =========================================================
 
 BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "Qwen/Qwen3-VL-4B-Instruct")
-ADAPTER_PATH = os.getenv("ADAPTER_PATH", "./artifacts/final_adapter")
 
-USE_2507_POSTPROCESS = os.getenv("USE_2507_POSTPROCESS", "true").lower() == "true"
+ADAPTER_URL = os.getenv(
+    "ADAPTER_URL",
+    "https://data.taeo-dev.com/dataset/traffic/final_adapter"
+)
+
+LOCAL_ADAPTER_PATH = Path(__file__).resolve().parents[4] / "artifacts" / "final_adapter"
+ADAPTER_PATH = os.getenv("ADAPTER_PATH", str(LOCAL_ADAPTER_PATH))
+
+USE_2507_POSTPROCESS = os.getenv("USE_2507_POSTPROCESS", "true").lower() == "true""
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -167,10 +175,6 @@ def load_inference_objects(
     )
 
     model.eval()
-
-    if DEVICE != "cuda":
-        model = model.to(DEVICE)
-
     print("[INFO] 모델 준비 완료")
     return model, processor
 
