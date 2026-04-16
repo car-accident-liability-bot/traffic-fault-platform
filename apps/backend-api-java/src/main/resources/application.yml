@@ -1,0 +1,19 @@
+server:
+  port: 28080
+
+spring:
+  application:
+    name: backend-api-java
+  servlet:
+    multipart:
+      # 수정 포인트:
+      # 사고 영상 업로드가 들어오므로 기본값보다 여유 있게 올린다.
+      max-file-size: 1024MB
+      max-request-size: 1024MB
+
+traffic:
+  inference:
+    # 수정 포인트:
+    # inference-service는 그대로 두고, Java 백엔드가 외부 설정으로 Python API를 바라보게 한다.
+    base-url: ${TRAFFIC_INFERENCE_BASE_URL:http://192.168.0.9:38000}
+    predict-path: ${TRAFFIC_INFERENCE_PREDICT_PATH:/predict}
