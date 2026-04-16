@@ -177,7 +177,9 @@ class TrafficAccidentQADataset(Dataset):
         캐시 키: {video_stem}_fps{fps}_px{max_pixels}
         - 메모리 캐시(_frame_cache): 프로세스 내 dict, worker 재시작 없이 반복 접근 시 빠름
         - 디스크 캐시(_cache_dir): .npy 파일로 저장, num_workers>0 환경에서도 공유 가능
+        - 원자적 저장: tmp 파일에 먼저 쓴 뒤 rename → 여러 worker 동시 저장 시 파일 손상 방지
         """
+        import os
         import numpy as np
 
         # 1. 메모리 캐시 확인
@@ -190,10 +192,14 @@ class TrafficAccidentQADataset(Dataset):
             cache_key = f"{Path(video_path).stem}_fps{self.fps}_px{self.max_pixels}"
             cache_file = self._cache_dir / f"{cache_key}.npy"
             if cache_file.exists():
-                frames = np.load(str(cache_file))
-                video_inputs = [frames]
-                self._frame_cache[video_path] = video_inputs
-                return video_inputs
+                try:
+                    frames = np.load(str(cache_file))
+                    video_inputs = [frames]
+                    self._frame_cache[video_path] = video_inputs
+                    return video_inputs
+                except (ValueError, OSError):
+                    # 불완전하게 쓰인 파일 → 삭제 후 재디코딩
+                    cache_file.unlink(missing_ok=True)
 
         # 3. 새로 디코딩 (process_vision_info에 비디오만 담은 최소 메시지 전달)
         _, video_inputs = process_vision_info([{
@@ -202,9 +208,12 @@ class TrafficAccidentQADataset(Dataset):
                          "fps": self.fps, "max_pixels": self.max_pixels}],
         }])
 
-        # 4. 디스크 캐시 저장
+        # 4. 디스크 캐시 원자적 저장 (tmp → rename)
+        # 여러 worker가 같은 파일을 동시에 저장해도 손상되지 않음
         if cache_file is not None and video_inputs:
-            np.save(str(cache_file), video_inputs[0])
+            tmp_file = cache_file.with_name(f"{cache_file.stem}.{os.getpid()}.tmp.npy")
+            np.save(str(tmp_file), video_inputs[0])
+            os.replace(str(tmp_file), str(cache_file))  # 원자적 rename
 
         # 5. 메모리 캐시 저장
         self._frame_cache[video_path] = video_inputs
