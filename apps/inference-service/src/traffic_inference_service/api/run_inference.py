@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import requests
 from pathlib import Path
 from typing import Optional
 
@@ -10,14 +11,24 @@ from peft import PeftModel
 from transformers import AutoProcessor
 
 from traffic_ai_core.Qwen3_VL_4B_Instruct.model.model import load_model
-from traffic_inference_service.api.prompt_config import SYSTEM_PROMPT, QUESTION_MAP
+from traffic_inference_service.api.postprocess_2507 import postprocess_answer
+from traffic_inference_service.api.prompt_config import QUESTION_MAP, SYSTEM_PROMPT
 
 # =========================================================
 # 설정
 # =========================================================
 
 BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "Qwen/Qwen3-VL-4B-Instruct")
-ADAPTER_PATH = os.getenv("ADAPTER_PATH", "./artifacts/final_adapter")
+
+ADAPTER_URL = os.getenv(
+    "ADAPTER_URL",
+    "https://data.taeo-dev.com/dataset/traffic/final_adapter"
+)
+
+LOCAL_ADAPTER_PATH = Path(__file__).resolve().parents[4] / "artifacts" / "final_adapter"
+ADAPTER_PATH = os.getenv("ADAPTER_PATH", str(LOCAL_ADAPTER_PATH))
+
+USE_2507_POSTPROCESS = os.getenv("USE_2507_POSTPROCESS", "true").lower() == "true""
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -164,10 +175,6 @@ def load_inference_objects(
     )
 
     model.eval()
-
-    if DEVICE != "cuda":
-        model = model.to(DEVICE)
-
     print("[INFO] 모델 준비 완료")
     return model, processor
 
@@ -242,7 +249,20 @@ def predict_one(
         input_ids=inputs["input_ids"],
     )
 
-    return normalize_answer(decoded)
+    raw_output = normalize_answer(decoded)
+
+    if USE_2507_POSTPROCESS:
+        try:
+            final_output = postprocess_answer(
+                question_type=question_type,
+                raw_output=raw_output,
+            )
+            return final_output
+        except Exception as e:
+            print(f"[WARN] 2507 후처리 실패, 원본 답변 반환: {e}")
+            return raw_output
+
+    return raw_output
 
 
 def predict_from_video(
