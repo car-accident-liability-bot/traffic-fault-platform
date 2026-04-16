@@ -69,15 +69,15 @@ class ExperimentConfig:
     description: str               # 실험 목적 한 줄 설명
 
     # TrainingConfig 필드 오버라이드 (지정하지 않으면 TrainingConfig 기본값 사용)
-    lora_r: int = 16
-    lora_alpha: int = 32
+    lora_r: int = 8
+    lora_alpha: int = 16
     lora_dropout: float = 0.05
-    fps: float = 1.0
-    max_pixels: int = 360 * 420
+    fps: float = 0.5
+    max_pixels: int = 320 * 320
     learning_rate: float = 2e-4
     num_train_epochs: int = 5
     warmup_ratio: float = 0.05
-    eval_steps: int = 50
+    eval_steps: int = 100
 
     # 프롬프트 설정
     system_prompt_key: str = "default"   # SYSTEM_PROMPTS 딕셔너리 키
@@ -269,15 +269,15 @@ def _make_catalog() -> dict[str, ExperimentConfig]:
         name="phase2_main",
         phase=2,
         description="본 학습 — Phase 1 최적 설정 적용 (80 클래스, 전체 데이터)",
-        lora_r=16,           # Phase 1 결과로 업데이트 예정
-        lora_alpha=32,
+        lora_r=8,            # Phase 1 결과로 업데이트 예정
+        lora_alpha=16,
         lora_dropout=0.05,
-        fps=1.0,
-        max_pixels=360 * 420,
+        fps=0.5,
+        max_pixels=320 * 320,
         learning_rate=2e-4,
         num_train_epochs=5,
         warmup_ratio=0.03,
-        eval_steps=100,
+        eval_steps=200,
         train_ratio=0.7,
         val_ratio=0.2,
         max_samples_per_category=200,   # soft capping: 다수 클래스 최대 200개
