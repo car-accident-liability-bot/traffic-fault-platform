@@ -28,7 +28,7 @@ ADAPTER_URL = os.getenv(
 LOCAL_ADAPTER_PATH = Path(__file__).resolve().parents[4] / "artifacts" / "final_adapter"
 ADAPTER_PATH = os.getenv("ADAPTER_PATH", str(LOCAL_ADAPTER_PATH))
 
-USE_2507_POSTPROCESS = os.getenv("USE_2507_POSTPROCESS", "true").lower() == "true""
+USE_2507_POSTPROCESS = os.getenv("USE_2507_POSTPROCESS", "true").lower() == "true"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
