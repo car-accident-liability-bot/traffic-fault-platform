@@ -105,8 +105,14 @@ def run_experiment(
     eval_config = EvaluatorConfig(
         fps=exp.fps,
         max_pixels=exp.max_pixels,
+        max_seq_len=training_cfg.max_seq_len,
         system_prompt=exp.system_prompt,
         verbose=True,
+        video_cache_dir=training_cfg.video_cache_dir,
+        reuse_video_cache=bool(training_cfg.video_cache_dir),
+        sort_by_video=True,
+        compute_bertscore=training_cfg.compute_bertscore,
+        bertscore_batch_size=training_cfg.bertscore_batch_size,
     )
     aggregated, per_sample = run_evaluation(
         model, processor, test_samples,

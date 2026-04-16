@@ -3,18 +3,17 @@
 
 학습된 모델(또는 베이스라인 모델)을 사용해 test split에 대해 생성(generate)을 수행하고
 metrics.py로 지표를 산출합니다.
-
-사용 예:
-    config = EvaluatorConfig(max_new_tokens=128, batch_size=1)
-    summary, detail = run_evaluation(model, processor, test_samples, config)
-    print(format_summary(summary, "A-1"))
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 
 from training_runner.evaluation.metrics import (
@@ -45,25 +44,54 @@ def _default_device() -> str:
     return "cpu"
 
 
+def _stable_path_hash(path: Path) -> str:
+    """[수정] dataset과 동일하게 경로 해시를 cache key에 포함해 stem 충돌을 피합니다."""
+    resolved = path.resolve(strict=False)
+    return hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:12]
+
+
+def _resolve_runtime_device(model, requested_device: str) -> str:
+    """[수정] model/input device mismatch를 방지하기 위해 실제 평가 디바이스를 1회 확정합니다."""
+    try:
+        current_device = str(next(model.parameters()).device)
+    except (StopIteration, AttributeError):
+        current_device = "cpu"
+
+    if current_device != requested_device and requested_device != "cpu":
+        try:
+            model.to(requested_device)
+            return requested_device
+        except Exception:
+            return current_device
+    return current_device if current_device != "meta" else requested_device
+
+
 @dataclass
 class EvaluatorConfig:
     """추론·평가 설정."""
-    max_new_tokens: int = 128      # 생성 최대 토큰 수
-    fps: float = 1.0               # 비디오 프레임 추출률
-    max_pixels: int = 360 * 420    # 비디오 프레임 최대 픽셀
-    max_seq_len: int = 512         # 프롬프트 최대 토큰 길이
+
+    max_new_tokens: int = 64
+    fps: float = 0.5
+    max_pixels: int = 320 * 320
+    max_seq_len: int = 512
     system_prompt: str = (
         "당신은 교통사고 영상을 분석하는 전문 분석가입니다. "
         "제공된 블랙박스 영상을 주의 깊게 관찰하고, "
         "사고 상황에 대한 질문에 정확하고 간결하게 답변하세요."
     )
     device: str = field(default_factory=_default_device)
-    verbose: bool = True           # 진행 상황 출력 여부
+    verbose: bool = True
+
+    # [수정] dataset와 같은 프레임 캐시를 재사용할 수 있게 evaluator에도 cache 설정을 추가합니다.
+    video_cache_dir: str = ""
+    reuse_video_cache: bool = True
+    sort_by_video: bool = True
+
     # BERTScore 설정
-    compute_bertscore: bool = True          # BERTScore 계산 여부
-    bertscore_lang: str = "ko"              # BERTScore 언어 코드
-    bertscore_model_type: str | None = None # None이면 lang으로 자동 선택
-    bertscore_batch_size: int = 64          # BERTScore 배치 크기
+    compute_bertscore: bool = False
+    bertscore_lang: str = "ko"
+    bertscore_model_type: str | None = None
+    bertscore_batch_size: int = 32
 
 
 def run_evaluation(
@@ -74,36 +102,52 @@ def run_evaluation(
     *,
     experiment_name: str = "",
 ) -> tuple[dict, list[dict]]:
-    """test_samples에 대해 추론 후 평가 지표를 반환합니다.
-
-    Args:
-        model:          학습된(또는 베이스라인) 모델
-        processor:      Qwen3-VL 프로세서
-        test_samples:   VideoQASample 리스트 (dataset.py의 _all_samples / test split)
-        config:         EvaluatorConfig (None이면 기본값 사용)
-        experiment_name: 출력 헤더에 표시할 실험 이름
-
-    Returns:
-        (aggregated_metrics, per_sample_results)
-        - aggregated_metrics: aggregate_metrics() 반환값
-        - per_sample_results: 샘플별 dict 리스트 (prediction, answer, metrics 포함)
-    """
+    """test_samples에 대해 추론 후 평가 지표를 반환합니다."""
     if config is None:
         config = EvaluatorConfig()
 
+    # [수정] 실제 모델이 올라간 장치에 맞춰 입력 텐서를 보내 device mismatch를 막습니다.
+    runtime_device = _resolve_runtime_device(model, config.device)
     model.eval()
     results: list[dict] = []
     total = len(test_samples)
+
+    # [수정] 같은 영상을 묶어 순회하면 cache hit율이 올라 최종 평가 시간이 줄어듭니다.
+    if config.sort_by_video:
+        ordered_samples = sorted(
+            test_samples,
+            key=lambda sample: (str(sample.video_path), sample.question_type, sample.video_id),
+        )
+    else:
+        ordered_samples = test_samples
+
+    # [수정] evaluator 레벨 메모리 cache.
+    video_cache: dict[str, list] = {}
+    # [수정] 같은 비디오의 비전 텐서를 재사용해 평가 전처리 병목을 줄입니다.
+    visual_feature_cache: dict[str, dict[str, torch.Tensor]] = {}
+    # [수정] text-only input_ids와 multimodal input_ids가 실제로 같은지 1회만 검증합니다.
+    text_merge_state: dict[str, bool | None] = {"supported": None}
 
     if config.verbose:
         print(f"\n[Evaluator] '{experiment_name}' 평가 시작 — {total}개 샘플")
 
     start = time.time()
 
-    for idx, sample in enumerate(test_samples, 1):
-        prediction = _generate_answer(model, processor, sample, config)
+    for idx, sample in enumerate(ordered_samples, 1):
+        prediction = _generate_answer(
+            model,
+            processor,
+            sample,
+            config,
+            video_cache=video_cache,
+            visual_feature_cache=visual_feature_cache,
+            runtime_device=runtime_device,
+            text_merge_state=text_merge_state,
+        )
         sample_metrics = compute_sample_metrics(
-            prediction, sample.answer, sample.question_type
+            prediction,
+            sample.answer,
+            sample.question_type,
         )
         results.append({
             "video_id": sample.video_id,
@@ -120,16 +164,13 @@ def run_evaluation(
             eta = elapsed / idx * (total - idx)
             print(
                 f"  [{idx}/{total}] {sample.question_type:<30} "
-                f"score={sample_metrics['primary_score']:.4f}  "
-                f"ETA {eta:.0f}s"
+                f"score={sample_metrics['primary_score']:.4f}  ETA {eta:.0f}s"
             )
 
-    # ── BERTScore 배치 계산 ──────────────────────────────────────
-    # 추론 완료 후 한 번에 계산해 GPU 메모리 스파이크를 최소화합니다.
     if config.compute_bertscore:
         bert_indices = [
-            i for i, r in enumerate(results)
-            if r["question_type"] in _BERT_SCORE_TYPES
+            i for i, result in enumerate(results)
+            if result["question_type"] in _BERT_SCORE_TYPES
         ]
         if bert_indices:
             if config.verbose:
@@ -138,20 +179,21 @@ def run_evaluation(
                     f"({len(bert_indices)}개 샘플, lang={config.bertscore_lang}) ..."
                 )
             preds = [results[i]["prediction"] for i in bert_indices]
-            refs  = [results[i]["answer"]     for i in bert_indices]
+            refs = [results[i]["answer"] for i in bert_indices]
             try:
                 bs_scores = compute_bert_scores(
-                    preds, refs,
+                    preds,
+                    refs,
                     lang=config.bertscore_lang,
                     model_type=config.bertscore_model_type,
-                    device=config.device,
+                    device=runtime_device,
                     batch_size=config.bertscore_batch_size,
                     verbose=config.verbose,
                 )
                 for i, score in zip(bert_indices, bs_scores):
                     results[i]["bert_score"] = score
                 if config.verbose:
-                    print(f"  BERTScore 완료  평균 F1={sum(bs_scores)/len(bs_scores):.4f}")
+                    print(f"  BERTScore 완료  평균 F1={sum(bs_scores) / len(bs_scores):.4f}")
             except ImportError as exc:
                 if config.verbose:
                     print(f"  [WARNING] BERTScore 건너뜀: {exc}")
@@ -166,17 +208,93 @@ def run_evaluation(
     return aggregated, results
 
 
-# ---------------------------------------------------------------------------
-# 내부 헬퍼
-# ---------------------------------------------------------------------------
+def _build_video_cache_key(video_path: Path, fps: float, max_pixels: int) -> str:
+    return f"{video_path.stem}_{_stable_path_hash(video_path)}_fps{fps}_px{max_pixels}"
 
-def _generate_answer(
-    model,
+
+def _load_or_decode_video_inputs(
+    sample: VideoQASample,
+    config: EvaluatorConfig,
+    *,
+    video_cache: dict[str, list],
+) -> list:
+    cache_key = f"{sample.video_path}|fps={config.fps}|px={config.max_pixels}"
+    if cache_key in video_cache:
+        return video_cache[cache_key]
+
+    cache_dir = Path(config.video_cache_dir) if config.video_cache_dir else None
+    cache_file: Path | None = None
+
+    if config.reuse_video_cache and cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        disk_key = _build_video_cache_key(Path(sample.video_path), config.fps, config.max_pixels)
+        cache_file = cache_dir / f"{disk_key}.npy"
+        if cache_file.exists():
+            try:
+                frames = np.load(str(cache_file), allow_pickle=False)
+                video_inputs = [frames]
+                video_cache[cache_key] = video_inputs
+                return video_inputs
+            except (ValueError, OSError):
+                cache_file.unlink(missing_ok=True)
+
+    _, video_inputs = process_vision_info([
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "video",
+                    "video": str(sample.video_path),
+                    "fps": config.fps,
+                    "max_pixels": config.max_pixels,
+                }
+            ],
+        }
+    ])
+
+    # [수정] 평가에서 새로 디코딩한 결과도 캐시 파일로 남겨 다음 실행에 재사용합니다.
+    if config.reuse_video_cache and cache_file is not None and video_inputs:
+        tmp_file = cache_file.with_name(f"{cache_file.stem}.{os.getpid()}.tmp.npy")
+        np.save(str(tmp_file), video_inputs[0])
+        os.replace(str(tmp_file), str(cache_file))
+
+    video_cache[cache_key] = video_inputs
+    return video_inputs
+
+
+def _build_text_inputs(processor, prompt_text: str, config: EvaluatorConfig) -> dict[str, torch.Tensor]:
+    """[수정] 비디오와 무관한 input_ids/attention_mask는 text-only tokenization으로 생성합니다."""
+    return processor(
+        text=[prompt_text],
+        images=None,
+        videos=None,
+        return_tensors="pt",
+        truncation=True,
+        max_length=config.max_seq_len,
+    )
+
+
+
+def _extract_visual_features(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """[수정] 질문과 무관한 비전 텐서만 분리해 비디오 단위로 재사용합니다."""
+    visual: dict[str, torch.Tensor] = {}
+    for key in ["pixel_values", "image_grid_thw", "video_grid_thw"]:
+        if key in batch:
+            visual[key] = batch[key].clone()
+    return visual
+
+
+
+def _build_generation_inputs(
     processor,
     sample: VideoQASample,
     config: EvaluatorConfig,
-) -> str:
-    """단일 샘플에 대해 모델 추론 후 생성된 답변 텍스트를 반환합니다."""
+    *,
+    video_cache: dict[str, list],
+    visual_feature_cache: dict[str, dict[str, torch.Tensor]],
+    text_merge_state: dict[str, bool | None],
+) -> dict[str, torch.Tensor]:
+    """[수정] text-only + cached visual merge가 가능하면 같은 비디오의 비전 전처리를 한 번만 사용합니다."""
     messages = [
         {"role": "system", "content": config.system_prompt},
         {
@@ -192,50 +310,93 @@ def _generate_answer(
             ],
         },
     ]
-
-    # 프롬프트 텍스트 (답변 생성 시작 토큰 포함)
     prompt_text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
-    image_inputs, video_inputs = process_vision_info(messages)
 
-    inputs = processor(
+    text_inputs = _build_text_inputs(processor, prompt_text, config)
+    visual_cache_key = str(sample.video_path)
+    cached_visual = visual_feature_cache.get(visual_cache_key)
+    if cached_visual is not None and text_merge_state["supported"] is True:
+        merged_inputs = dict(text_inputs)
+        merged_inputs.update(cached_visual)
+        return merged_inputs
+
+    video_inputs = _load_or_decode_video_inputs(
+        sample,
+        config,
+        video_cache=video_cache,
+    )
+    multimodal_inputs = processor(
         text=[prompt_text],
-        images=image_inputs,
+        images=None,
         videos=video_inputs,
         return_tensors="pt",
         truncation=True,
         max_length=config.max_seq_len,
     )
-    inputs = {k: v.to(config.device) for k, v in inputs.items()}
 
-    with torch.no_grad():
+    ids_match = torch.equal(multimodal_inputs["input_ids"], text_inputs["input_ids"])
+    mask_match = torch.equal(multimodal_inputs["attention_mask"], text_inputs["attention_mask"])
+    if text_merge_state["supported"] is None:
+        text_merge_state["supported"] = bool(ids_match and mask_match)
+        if config.verbose:
+            print(
+                "[Evaluator] text-only + visual cache 병합 "
+                f"{'활성화' if text_merge_state['supported'] else '비활성화'}"
+            )
+
+    if text_merge_state["supported"] and ids_match and mask_match:
+        visual_feature_cache[visual_cache_key] = _extract_visual_features(multimodal_inputs)
+        merged_inputs = dict(text_inputs)
+        merged_inputs.update(visual_feature_cache[visual_cache_key])
+        return merged_inputs
+
+    # [수정] 호환되지 않으면 안전하게 기존 multimodal processor 결과를 그대로 사용합니다.
+    text_merge_state["supported"] = False
+    return multimodal_inputs
+
+
+
+def _generate_answer(
+    model,
+    processor,
+    sample: VideoQASample,
+    config: EvaluatorConfig,
+    *,
+    video_cache: dict[str, list],
+    visual_feature_cache: dict[str, dict[str, torch.Tensor]],
+    runtime_device: str,
+    text_merge_state: dict[str, bool | None],
+) -> str:
+    """단일 샘플에 대해 모델 추론 후 생성된 답변 텍스트를 반환합니다."""
+    inputs = _build_generation_inputs(
+        processor,
+        sample,
+        config,
+        video_cache=video_cache,
+        visual_feature_cache=visual_feature_cache,
+        text_merge_state=text_merge_state,
+    )
+    inputs = {key: value.to(runtime_device) for key, value in inputs.items()}
+
+    with torch.inference_mode():
         generated_ids = model.generate(
             **inputs,
             max_new_tokens=config.max_new_tokens,
-            do_sample=False,   # 평가 시 greedy decoding
-            pad_token_id=processor.tokenizer.eos_token_id,
+            do_sample=False,
+            pad_token_id=processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
         )
 
-    # 입력 프롬프트 부분을 제거하고 생성된 토큰만 디코딩
     input_len = inputs["input_ids"].shape[1]
     new_tokens = generated_ids[0][input_len:]
     return processor.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
-# ---------------------------------------------------------------------------
-# 그래디언트 흐름 진단 유틸 (Section 4-2 대응)
-# ---------------------------------------------------------------------------
-
 def check_gradient_flow(model) -> dict[str, float]:
-    """LoRA 레이어별 gradient norm을 반환합니다.
-
-    학습 중 주기적으로 호출해 그래디언트 흐름을 진단합니다.
-
-    Returns:
-        {layer_name: grad_norm, ...}
-        정상 범위: 1e-4 ~ 1e-1
-    """
+    """LoRA 레이어별 gradient norm을 반환합니다."""
     grad_norms: dict[str, float] = {}
     for name, param in model.named_parameters():
         if param.requires_grad and param.grad is not None:
@@ -254,9 +415,9 @@ def diagnose_gradient_flow(model) -> None:
         )
         return
 
-    zero_layers = [n for n, v in grad_norms.items() if v < 1e-9]
-    vision_zero = [n for n in zero_layers if "visual" in n or "vision" in n]
-    lora_zero   = [n for n in zero_layers if "lora" in n.lower()]
+    zero_layers = [name for name, value in grad_norms.items() if value < 1e-9]
+    vision_zero = [name for name in zero_layers if "visual" in name or "vision" in name]
+    lora_zero = [name for name in zero_layers if "lora" in name.lower()]
 
     print(f"[Gradient 진단] 학습 파라미터 수: {len(grad_norms)}")
     print(f"  grad≈0 레이어: {len(zero_layers)} 개")
@@ -266,11 +427,10 @@ def diagnose_gradient_flow(model) -> None:
     if vision_zero:
         print(f"  ⚠ Vision 레이어 grad=0: {len(vision_zero)}개 → visual encoder frozen 여부 확인")
 
-    normal = {n: v for n, v in grad_norms.items() if 1e-4 <= v <= 1e-1}
+    normal = {name: value for name, value in grad_norms.items() if 1e-4 <= value <= 1e-1}
     print(f"  정상 범위(1e-4~1e-1): {len(normal)}/{len(grad_norms)} 레이어")
 
-    # 상위 5개 norm 값 출력
-    top5 = sorted(grad_norms.items(), key=lambda x: -x[1])[:5]
+    top5 = sorted(grad_norms.items(), key=lambda item: -item[1])[:5]
     print("  [Top-5 grad norm]")
     for name, norm in top5:
         print(f"    {norm:.2e}  {name}")

@@ -74,9 +74,10 @@ class ExperimentConfig:
     lora_dropout: float = 0.05
     fps: float = 0.5
     max_pixels: int = 320 * 320
-    learning_rate: float = 2e-4
-    num_train_epochs: int = 5
-    warmup_ratio: float = 0.05
+    # [수정] TrainingConfig 기본선과 맞추기 위해 실험 기본값도 1e-4 / 3 epoch로 보수화합니다.
+    learning_rate: float = 1e-4
+    num_train_epochs: int = 3
+    warmup_ratio: float = 0.03
     eval_steps: int = 100
 
     # 프롬프트 설정
@@ -274,8 +275,9 @@ def _make_catalog() -> dict[str, ExperimentConfig]:
         lora_dropout=0.05,
         fps=0.5,
         max_pixels=320 * 320,
-        learning_rate=2e-4,
-        num_train_epochs=5,
+        # [수정] phase2 본학습은 과도한 장기 학습/공격적 LR을 피하도록 1e-4 / 3 epoch로 조정합니다.
+        learning_rate=1e-4,
+        num_train_epochs=3,
         warmup_ratio=0.03,
         eval_steps=200,
         train_ratio=0.7,
