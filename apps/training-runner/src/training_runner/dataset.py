@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,6 +68,8 @@ class TrafficAccidentQADataset(Dataset):
         question_types: list[str] | None = None, # 사용할 질문 타입 목록 (None이면 전체 사용)
         indices: list[int] | None = None,        # 전체 샘플 중 사용할 인덱스 목록 (None이면 전체 사용)
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        max_samples_per_category: int | None = None,  # Phase 1 파일럿: 카테고리별 최대 샘플 수
+        video_cache_dir: str | Path | None = None,    # 프레임 캐시 디렉토리 (None이면 캐시 없음)
     ) -> None:
         self.qa_json_path = Path(qa_json_path)
         self.raw_video_root = Path(raw_video_root)
@@ -78,6 +80,16 @@ class TrafficAccidentQADataset(Dataset):
         self.max_seq_len = max_seq_len
         self.question_types = set(question_types or QUESTION_TYPES)
         self.system_prompt = system_prompt
+        self.max_samples_per_category = max_samples_per_category
+
+        # 비디오 프레임 캐시: 같은 비디오가 QA 페어 수만큼 반복 디코딩되는 것을 방지
+        # _cache_dir: npy 파일 저장 위치 (None이면 디스크 캐시 미사용)
+        # _frame_cache: 프로세스 내 메모리 캐시 (DataLoader worker별로 독립 유지됨)
+        self._cache_dir: Path | None = Path(video_cache_dir) if video_cache_dir else None
+        self._frame_cache: dict[str, list] = {}
+        if self._cache_dir:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[Dataset] 프레임 캐시 활성화: {self._cache_dir}")
 
         # 1. 파일 시스템을 뒤져서 (QA, Video, Label) 3가지가 모두 일치하는 유효한 전체 샘플을 구성한다.
         self._all_samples: list[VideoQASample] = self._build_index()
@@ -129,9 +141,14 @@ class TrafficAccidentQADataset(Dataset):
                     video_id=entry["video_id"], category=category,
                 ))
 
+        # max_samples_per_category: 카테고리(case_code)별 샘플 수 상한 (Phase 1 파일럿용)
+        if self.max_samples_per_category is not None:
+            samples = _cap_samples_per_category(samples, self.max_samples_per_category)
+
         print(
             f"[Dataset._build_index] QA: {len(qa_data)} | "
             f"매칭: {matched} | 미매칭: {len(unmatched)} | 샘플: {len(samples)}"
+            + (f" (카테고리별 최대 {self.max_samples_per_category}개 적용)" if self.max_samples_per_category else "")
         )
 
         # 매칭 실패한 케이스가 있다면 최대 5개까지 예시를 보여준다 (디버깅)
@@ -154,12 +171,60 @@ class TrafficAccidentQADataset(Dataset):
     def __len__(self) -> int:
         return len(self._samples)
 
+    def _get_video_inputs(self, video_path: str) -> list:
+        """비디오 프레임을 캐시에서 로드하거나 디코딩 후 캐시에 저장합니다.
+
+        캐시 키: {video_stem}_fps{fps}_px{max_pixels}
+        - 메모리 캐시(_frame_cache): 프로세스 내 dict, worker 재시작 없이 반복 접근 시 빠름
+        - 디스크 캐시(_cache_dir): .npy 파일로 저장, num_workers>0 환경에서도 공유 가능
+        - 원자적 저장: tmp 파일에 먼저 쓴 뒤 rename → 여러 worker 동시 저장 시 파일 손상 방지
+        """
+        import os
+        import numpy as np
+
+        # 1. 메모리 캐시 확인
+        if video_path in self._frame_cache:
+            return self._frame_cache[video_path]
+
+        # 2. 디스크 캐시 확인
+        cache_file: Path | None = None
+        if self._cache_dir is not None:
+            cache_key = f"{Path(video_path).stem}_fps{self.fps}_px{self.max_pixels}"
+            cache_file = self._cache_dir / f"{cache_key}.npy"
+            if cache_file.exists():
+                try:
+                    frames = np.load(str(cache_file))
+                    video_inputs = [frames]
+                    self._frame_cache[video_path] = video_inputs
+                    return video_inputs
+                except (ValueError, OSError):
+                    # 불완전하게 쓰인 파일 → 삭제 후 재디코딩
+                    cache_file.unlink(missing_ok=True)
+
+        # 3. 새로 디코딩 (process_vision_info에 비디오만 담은 최소 메시지 전달)
+        _, video_inputs = process_vision_info([{
+            "role": "user",
+            "content": [{"type": "video", "video": video_path,
+                         "fps": self.fps, "max_pixels": self.max_pixels}],
+        }])
+
+        # 4. 디스크 캐시 원자적 저장 (tmp → rename)
+        # 여러 worker가 같은 파일을 동시에 저장해도 손상되지 않음
+        if cache_file is not None and video_inputs:
+            tmp_file = cache_file.with_name(f"{cache_file.stem}.{os.getpid()}.tmp.npy")
+            np.save(str(tmp_file), video_inputs[0])
+            os.replace(str(tmp_file), str(cache_file))  # 원자적 rename
+
+        # 5. 메모리 캐시 저장
+        self._frame_cache[video_path] = video_inputs
+        return video_inputs
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         """
         Qwen3-VL 입력 양식에 맞게 텍스트와 시각 정보 처리 후 텐서 반환.
         - messages: 시스템 프롬프트 + 사용자 질문(텍스트+비디오) + 모델 답변으로 구성된 대화 형식
         - processor.apply_chat_template: Qwen3-VL이 요구하는 텍스트 포맷으로 변환 (토크나이저 역할 포함)
-        - process_vision_info: 메시지에서 비디오 정보 추출하여 모델 입력에 맞는 텐서로 변환
+        - _get_video_inputs: 프레임을 캐시(디스크/메모리)에서 가져오거나 디코딩 후 캐시에 저장
         - SFT 레이블 마스킹: 프롬프트 구간은 -100으로 마스킹하여 CrossEntropyLoss 계산에서 제외 (답변 구간만 학습 대상)
         """
         sample = self._samples[idx]
@@ -170,13 +235,13 @@ class TrafficAccidentQADataset(Dataset):
                 "role": "user",
                 "content": [
                     {
-                        "type": "video", 
+                        "type": "video",
                         "video": str(sample.video_path),
-                        "fps": self.fps, 
+                        "fps": self.fps,
                         "max_pixels": self.max_pixels
                     },
                     {
-                        "type": "text", 
+                        "type": "text",
                         "text": sample.question
                     },
                 ],
@@ -194,8 +259,9 @@ class TrafficAccidentQADataset(Dataset):
             messages[:-1], tokenize=False, add_generation_prompt=True
         )
 
-        # 3. 시각 정보 처리: 메시지에서 비디오 정보를 추출하여 모델 입력에 맞는 텐서로 변환합니다.
-        image_inputs, video_inputs = process_vision_info(messages)
+        # 3. 비디오 프레임 로드 (캐시 우선, 미스 시 디코딩 후 저장)
+        image_inputs = None
+        video_inputs = self._get_video_inputs(str(sample.video_path))
 
         # 4. processor를 사용하여 텍스트와 시각 정보를 모델 입력 양식에 맞게 텐서로 변환합니다.
         full_batch = self.processor(
@@ -263,6 +329,118 @@ class TrafficAccidentQADataset(Dataset):
         return result
 
 
+def _cap_samples_per_category(
+    samples: list[VideoQASample], max_per_category: int
+) -> list[VideoQASample]:
+    """카테고리(case_code)별로 video_id 단위로 최대 N개 샘플만 남깁니다.
+
+    Phase 1 파일럿(case_code별 10개)과 Phase 2 soft capping(200개)에 사용됩니다.
+    video_id 단위로 제한해 데이터 릭을 방지합니다.
+    """
+    from collections import defaultdict
+
+    # category → video_id 집합
+    cat_video_ids: dict[str, list[str]] = defaultdict(list)
+    for s in samples:
+        if s.video_id not in cat_video_ids[s.category]:
+            cat_video_ids[s.category].append(s.video_id)
+
+    # 카테고리별 허용 video_id (최대 max_per_category개)
+    allowed_ids: set[str] = set()
+    for cat, video_ids in cat_video_ids.items():
+        allowed_ids.update(video_ids[:max_per_category])
+
+    return [s for s in samples if s.video_id in allowed_ids]
+
+
+def stratified_split_by_category(
+    samples: list[VideoQASample],
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> tuple[set[str], set[str], set[str]]:
+    """카테고리(case_code)별 계층적 train/val/test 분할.
+
+    전체 video_id를 무작위 셔플한 뒤 나누는 기존 방식은 운이 나쁘면 특정 카테고리가
+    test에만 몰리는 클래스 불균형이 생깁니다.
+    이 함수는 각 카테고리 안에서 독립적으로 비율 분할하여 모든 split에
+    카테고리가 균등하게 포함되도록 보장합니다.
+
+    Args:
+        samples:     VideoQASample 전체 리스트 (video_id·category 속성만 사용)
+        train_ratio: 학습 비율 (기본 0.7)
+        val_ratio:   검증 비율 (기본 0.2)
+        seed:        재현성 시드
+
+    Returns:
+        (train_ids, val_ids, test_ids) — 각각 video_id 문자열 집합
+
+    Edge-case:
+        카테고리당 비디오 수가 적을 때:
+          n=1 → train만,  n=2 → train 1 + test 1,  n=3 → train 2 + test 1
+    """
+    # category별 unique video_id 수집 (정렬로 시드 고정 시 재현성 보장)
+    cat_to_ids: dict[str, list[str]] = defaultdict(list)
+    seen: set[str] = set()
+    for s in samples:
+        if s.video_id not in seen:
+            seen.add(s.video_id)
+            cat_to_ids[s.category].append(s.video_id)
+
+    rng = random.Random(seed)
+
+    train_ids: set[str] = set()
+    val_ids:   set[str] = set()
+    test_ids:  set[str] = set()
+
+    for cat, video_ids in sorted(cat_to_ids.items()):
+        ids = sorted(video_ids)   # 정렬 후 셔플 → 시드 고정 시 재현성 보장
+        rng.shuffle(ids)
+
+        n       = len(ids)
+        n_train = max(1, int(round(n * train_ratio)))
+        n_val   = int(round(n * val_ratio))
+
+        # 합이 전체를 초과하지 않도록 클램프
+        n_train = min(n_train, n)
+        n_val   = min(n_val,   n - n_train)
+        # test는 나머지 전부 (반올림 오차 누적 방지)
+
+        train_ids.update(ids[:n_train])
+        val_ids.update(ids[n_train : n_train + n_val])
+        test_ids.update(ids[n_train + n_val :])
+
+    return train_ids, val_ids, test_ids
+
+
+def _log_split_stats(
+    all_samples: list[VideoQASample],
+    train_ids: set[str],
+    val_ids: set[str],
+    test_ids: set[str],
+) -> None:
+    """카테고리별 분할 분포를 요약 출력합니다."""
+    cat_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"train": 0, "val": 0, "test": 0})
+    for s in all_samples:
+        if s.video_id in train_ids:
+            cat_counts[s.category]["train"] += 1
+        elif s.video_id in val_ids:
+            cat_counts[s.category]["val"] += 1
+        elif s.video_id in test_ids:
+            cat_counts[s.category]["test"] += 1
+
+    cats_missing_test = [c for c, v in cat_counts.items() if v["test"] == 0]
+    cats_missing_val  = [c for c, v in cat_counts.items() if v["val"] == 0]
+    print(
+        f"[분할 통계] 카테고리 수: {len(cat_counts)} | "
+        f"test 비어있는 카테고리: {len(cats_missing_test)} | "
+        f"val 비어있는 카테고리: {len(cats_missing_val)}"
+    )
+    if cats_missing_test:
+        print(f"  → test 없음 (데이터 부족): {cats_missing_test[:5]}"
+              + (" ..." if len(cats_missing_test) > 5 else ""))
+
+
 def build_dataloaders(
     qa_json_path: str | Path,
     raw_video_root: str | Path,
@@ -279,6 +457,9 @@ def build_dataloaders(
     max_seq_len: int = 512,
     question_types: list[str] | None = None,
     num_workers: int = 0,
+    system_prompt: str = TrafficAccidentQADataset.DEFAULT_SYSTEM_PROMPT,
+    max_samples_per_category: int | None = None,
+    video_cache_dir: str | Path | None = None,
 ) -> tuple[
     TrafficAccidentQADataset, TrafficAccidentQADataset, TrafficAccidentQADataset,
     DataLoader, DataLoader, DataLoader,
@@ -290,23 +471,16 @@ def build_dataloaders(
     full_ds = TrafficAccidentQADataset(
         qa_json_path, raw_video_root, label_root, processor,
         fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
-        question_types=question_types,
+        question_types=question_types, system_prompt=system_prompt,
+        max_samples_per_category=max_samples_per_category,
     )
     all_samples = full_ds.get_all_samples()
 
-    # [데이터 릭 방지 로직]
-    # 영상 1개에 질문이 여러 개일 수 있습니다. 무조건 '비디오 ID' 단위로 분할해야 학습/검증 세트 간 데이터 릭이 발생하지 않습니다.
-    unique_ids = sorted({s.video_id for s in all_samples})
-    rng = random.Random(seed)
-    rng.shuffle(unique_ids)
-
-    n_total = len(unique_ids)
-    n_train = int(n_total * train_ratio)
-    n_val   = int(n_total * val_ratio)
-    # 정수 반올림 오차가 쌓이지 않도록 test는 나머지 전부를 가져간다
-    train_ids = set(unique_ids[:n_train])
-    val_ids   = set(unique_ids[n_train:n_train + n_val])
-    test_ids  = set(unique_ids[n_train + n_val:])
+    # [계층적 분할 — case_code별 균등 분할로 클래스 불균형 방지]
+    # 카테고리마다 독립적으로 비율 분할하므로, video_id 단위 분리도 자동 보장됩니다.
+    train_ids, val_ids, test_ids = stratified_split_by_category(
+        all_samples, train_ratio=train_ratio, val_ratio=val_ratio, seed=seed
+    )
 
     train_idx = [i for i, s in enumerate(all_samples) if s.video_id in train_ids]
     val_idx   = [i for i, s in enumerate(all_samples) if s.video_id in val_ids]
@@ -318,8 +492,14 @@ def build_dataloaders(
         f"검증: {len(val_ids)}개 비디오 / {len(val_idx)}샘플 | "
         f"테스트: {len(test_ids)}개 비디오 / {len(test_idx)}샘플"
     )
+    _log_split_stats(all_samples, train_ids, val_ids, test_ids)
 
-    _kw = dict(fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len, question_types=question_types)
+    _kw = dict(
+        fps=fps, max_pixels=max_pixels, max_seq_len=max_seq_len,
+        question_types=question_types, system_prompt=system_prompt,
+        max_samples_per_category=max_samples_per_category,
+        video_cache_dir=video_cache_dir,
+    )
     train_ds = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=train_idx, **_kw)
     val_ds   = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=val_idx,   **_kw)
     test_ds  = TrafficAccidentQADataset(qa_json_path, raw_video_root, label_root, processor, indices=test_idx,  **_kw)
