@@ -412,10 +412,8 @@ def predict_one(
 
     generated_ids = model.generate(
         **inputs,
-        max_new_tokens=max_new_tokens,
+        max_new_tokens=128,
         do_sample=False,
-        eos_token_id=processor.tokenizer.eos_token_id,
-        pad_token_id=processor.tokenizer.pad_token_id,
     )
 
     decoded = _extract_generated_text(
